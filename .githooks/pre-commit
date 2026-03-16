@@ -1,0 +1,38 @@
+#!/bin/sh
+# Pre-commit hook — runs BetterLeaks to block secrets before they reach GitHub
+
+TOOL=""
+
+# Find betterleaks — project-local first, then PATH
+if [ -f "./betterleaks.exe" ]; then
+  TOOL="./betterleaks.exe"
+elif [ -f "./betterleaks" ]; then
+  TOOL="./betterleaks"
+elif command -v betterleaks >/dev/null 2>&1; then
+  TOOL="betterleaks"
+fi
+
+if [ -z "$TOOL" ]; then
+  echo "[betterleaks] Not found — skipping secret scan."
+  echo "[betterleaks] Install from: https://github.com/betterleaks/betterleaks/releases"
+  exit 0
+fi
+
+echo "[betterleaks] Scanning staged files for secrets..."
+
+$TOOL protect --staged --config .betterleaks.toml
+
+EXIT=$?
+
+if [ $EXIT -ne 0 ]; then
+  echo ""
+  echo "  COMMIT BLOCKED — potential secret detected."
+  echo "  Review the findings above and remove any credentials."
+  echo "  To bypass (only if certain it is a false positive):"
+  echo "    git commit --no-verify"
+  echo ""
+  exit 1
+fi
+
+echo "[betterleaks] Clean — no secrets found."
+exit 0

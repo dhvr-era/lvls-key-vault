@@ -1,0 +1,30 @@
+# BetterLeaks configuration for lvls Key Vault
+# https://github.com/betterleaks/betterleaks
+
+title = "lvls Key Vault — Secret Scanning Rules"
+
+[extend]
+# Use the default ruleset as a base
+useDefault = true
+
+[allowlist]
+description = "Safe patterns — known non-secrets in this codebase"
+regexes = [
+  # Dev mode fallback credentials in server.ts — these are intentional placeholders
+  '''devPins.*1234''',
+  '''devPins.*Pass2a1''',
+  '''devPins.*Key1a1b''',
+  '''devPins.*Master1a''',
+  # .env.example template values — these are placeholders, not real secrets
+  '''your_64_char_hex_secret_here''',
+  # TOTP example values in docs
+  '''JBSWY3DPEHPK3PXP''',
+]
+
+paths = [
+  # Never scan generated/compiled output
+  '''dist/''',
+  '''node_modules/''',
+  # Never scan the example env file (it has intentional placeholder patterns)
+  '''.env.example''',
+]

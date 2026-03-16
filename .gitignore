@@ -28,3 +28,7 @@ SESSION_*.md
 SPEC.md.txt
 generate-certs.cjs
 server.log
+
+# BetterLeaks binary — install locally, do not commit the binary
+betterleaks.exe
+betterleaks
