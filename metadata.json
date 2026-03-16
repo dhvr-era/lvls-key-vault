@@ -1,0 +1,5 @@
+{
+  "name": "lvls Key Vault",
+  "description": "Privacy-first key vault and access control layer with 4 security levels.",
+  "requestFramePermissions": []
+}

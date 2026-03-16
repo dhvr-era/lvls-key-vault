@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>lvls Key Vault</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 360px;
+      min-height: 200px;
+      background: #09090b;
+      color: #d4d4d8;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 16px;
+      border-bottom: 1px solid #27272a;
+      background: #18181b;
+    }
+    header .logo { color: #10b981; font-family: monospace; font-weight: bold; font-size: 18px; }
+    header .domain { color: #71717a; font-size: 11px; margin-left: auto; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    header .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #27272a; flex-shrink: 0; }
+    header .status-dot.authed { background: #10b981; }
+
+    .section { padding: 14px 16px; border-bottom: 1px solid #27272a; }
+    .section:last-child { border-bottom: none; }
+    label { display: block; font-size: 10px; color: #71717a; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 5px; }
+    input, select {
+      width: 100%;
+      background: #18181b;
+      border: 1px solid #3f3f46;
+      border-radius: 8px;
+      padding: 8px 10px;
+      color: #f4f4f5;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input:focus, select:focus { border-color: #10b981; }
+    input[type="text"].code { font-family: monospace; letter-spacing: 0.4em; text-align: center; }
+    .row { display: flex; gap: 8px; }
+    .row > * { flex: 1; }
+    btn, button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 9px 14px;
+      border-radius: 8px;
+      border: none;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+    .btn-primary { background: #10b981; color: #09090b; }
+    .btn-primary:hover { background: #059669; }
+    .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-ghost { background: #27272a; color: #a1a1aa; border: 1px solid #3f3f46; }
+    .btn-ghost:hover { background: #3f3f46; color: #f4f4f5; }
+    .btn-full { width: 100%; }
+    .btn-sm { padding: 6px 10px; font-size: 11px; }
+    .error { color: #f87171; font-size: 11px; margin-top: 6px; }
+    .success { color: #10b981; font-size: 11px; margin-top: 6px; }
+    .secret-card {
+      background: #18181b;
+      border: 1px solid #3f3f46;
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .secret-card:hover { border-color: #10b981; background: #10b9811a; }
+    .secret-card:last-child { margin-bottom: 0; }
+    .secret-name { font-weight: 600; color: #f4f4f5; font-size: 13px; }
+    .secret-meta { color: #71717a; font-size: 11px; margin-top: 2px; display: flex; gap: 8px; align-items: center; }
+    .badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      background: #27272a;
+      color: #a1a1aa;
+      border: 1px solid #3f3f46;
+    }
+    .badge.l0 { background: #450a0a; color: #f87171; border-color: #7f1d1d; }
+    .badge.l1 { background: #451a03; color: #fb923c; border-color: #7c2d12; }
+    .badge.l2 { background: #172554; color: #60a5fa; border-color: #1e3a8a; }
+    .badge.l3 { background: #27272a; color: #a1a1aa; }
+    .spinner { width: 16px; height: 16px; border: 2px solid #3f3f46; border-top-color: #10b981; border-radius: 50%; animation: spin 0.6s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .empty { text-align: center; color: #52525b; padding: 24px 16px; font-size: 12px; }
+    #auth-section { display: block; }
+    #secrets-section { display: none; }
+    .level-colors { display: flex; gap: 4px; margin-bottom: 10px; }
+    .level-btn { flex: 1; padding: 5px; border-radius: 6px; border: 1px solid #3f3f46; background: #18181b; color: #71717a; cursor: pointer; font-size: 11px; font-weight: 600; text-align: center; transition: all 0.12s; }
+    .level-btn.selected { border-color: #10b981; background: #10b9811a; color: #10b981; }
+    .sep { height: 1px; background: #27272a; margin: 0 -16px; }
+    .fill-confirm {
+      background: #18181b;
+      border: 1px solid #10b981;
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 8px;
+    }
+    .fill-confirm .name { font-weight: 600; color: #f4f4f5; font-size: 13px; margin-bottom: 6px; }
+    .fill-confirm .fields { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: #71717a; }
+    .fill-confirm .fields span { display: flex; gap: 6px; align-items: center; }
+    .fill-confirm .fields .val { color: #a1a1aa; font-family: monospace; }
+    .actions { display: flex; gap: 8px; margin-top: 10px; }
+    footer { padding: 8px 16px; background: #18181b; border-top: 1px solid #27272a; display: flex; justify-content: space-between; align-items: center; }
+    footer .server { font-size: 10px; color: #52525b; }
+    footer .logout { font-size: 10px; color: #71717a; cursor: pointer; background: none; border: none; }
+    footer .logout:hover { color: #f87171; }
+  </style>
+</head>
+<body>
+
+<header>
+  <span class="logo">lvls</span>
+  <div id="status-dot" class="status-dot"></div>
+  <span id="domain-label" class="domain">—</span>
+</header>
+
+<!-- Auth Section -->
+<div id="auth-section" class="section">
+  <p style="color:#71717a;font-size:11px;margin-bottom:10px;">Authenticate with your lvls vault to auto-fill credentials.</p>
+
+  <div class="level-colors" id="level-btns">
+    <div class="level-btn selected" data-level="3">L3</div>
+    <div class="level-btn" data-level="2">L2</div>
+    <div class="level-btn" data-level="1">L1</div>
+    <div class="level-btn" data-level="0">L0</div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;gap:8px;">
+    <div>
+      <label>Passphrase / PIN</label>
+      <input type="password" id="credential-input" placeholder="Enter your credential…" autocomplete="current-password" />
+    </div>
+    <div id="totp-wrap">
+      <label>TOTP Code (if enabled)</label>
+      <input type="text" id="totp-input" class="code" maxlength="6" placeholder="000000" inputmode="numeric" autocomplete="one-time-code" />
+    </div>
+    <div id="auth-error" class="error" style="display:none;"></div>
+    <button class="btn-primary btn-full" id="unlock-btn" type="button">
+      Unlock Vault
+    </button>
+  </div>
+</div>
+
+<!-- Secrets Section -->
+<div id="secrets-section">
+  <div class="section" style="padding-bottom:8px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+      <span style="font-size:11px;color:#71717a;" id="secrets-label">Matching credentials</span>
+      <button class="btn-ghost btn-sm" id="show-all-btn" type="button">Show all</button>
+    </div>
+    <div id="secrets-list"></div>
+  </div>
+</div>
+
+<footer>
+  <span class="server">lvls @ localhost:3000</span>
+  <button class="logout" id="logout-btn" type="button">Lock vault</button>
+</footer>
+
+<script src="popup.js"></script>
+</body>
+</html>
