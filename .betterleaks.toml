@@ -10,21 +10,17 @@ useDefault = true
 [allowlist]
 description = "Safe patterns — known non-secrets in this codebase"
 regexes = [
-  # Dev mode fallback credentials in server.ts — these are intentional placeholders
-  '''devPins.*1234''',
-  '''devPins.*Pass2a1''',
-  '''devPins.*Key1a1b''',
-  '''devPins.*Master1a''',
   # .env.example template values — these are placeholders, not real secrets
   '''your_64_char_hex_secret_here''',
+  '''your_64_char_hex_totp_secret_here''',
   # TOTP example values in docs
   '''JBSWY3DPEHPK3PXP''',
+  # UI text in App.tsx describing level 1 contents — not a credential
+  '''HealthKit/BCI''',
 ]
 
 paths = [
   # Never scan generated/compiled output
   '''dist/''',
   '''node_modules/''',
-  # Never scan the example env file (it has intentional placeholder patterns)
-  '''.env.example''',
 ]

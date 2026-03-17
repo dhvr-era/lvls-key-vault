@@ -2,15 +2,15 @@
 // Manages auth token and proxies API calls to avoid CORS issues from content scripts
 
 // Auto-detect HTTPS or HTTP — prefers HTTPS if TLS certs are present on server
-let LVLS_SERVER = "https://127.0.0.1:3000";
+let LVLS_SERVER = "https://127.0.0.1:5000";
 async function detectServer() {
   try {
-    const res = await fetch("https://127.0.0.1:3000/api/health", { signal: AbortSignal.timeout(1500) });
-    if (res.ok) { LVLS_SERVER = "https://127.0.0.1:3000"; return; }
+    const res = await fetch("https://127.0.0.1:5000/api/health", { signal: AbortSignal.timeout(1500) });
+    if (res.ok) { LVLS_SERVER = "https://127.0.0.1:5000"; return; }
   } catch {}
   try {
-    const res = await fetch("http://127.0.0.1:3000/api/health", { signal: AbortSignal.timeout(1500) });
-    if (res.ok) { LVLS_SERVER = "http://127.0.0.1:3000"; return; }
+    const res = await fetch("http://127.0.0.1:5000/api/health", { signal: AbortSignal.timeout(1500) });
+    if (res.ok) { LVLS_SERVER = "http://127.0.0.1:5000"; return; }
   } catch {}
 }
 detectServer(); // runs once on service worker startup
@@ -29,15 +29,32 @@ async function clearToken() {
   await chrome.storage.session.remove("lvls_token");
 }
 
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  handleMessage(msg).then(sendResponse).catch(err => sendResponse({ error: err.message }));
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  handleMessage(msg, sender).then(sendResponse).catch(err => sendResponse({ error: err.message }));
   return true; // keep message channel open for async response
 });
 
-async function handleMessage(msg) {
+// Sender is the extension itself (popup, options page, etc.)
+function isExtensionSender(sender) {
+  return sender.id === chrome.runtime.id && !sender.tab;
+}
+
+// Sender is an injected content script running in a real tab
+function isContentScript(sender) {
+  return sender.id === chrome.runtime.id && !!(sender.tab && sender.tab.id);
+}
+
+// Trusted = extension itself OR injected content script
+function isTrustedSender(sender) {
+  return isExtensionSender(sender) || isContentScript(sender);
+}
+
+async function handleMessage(msg, sender) {
   switch (msg.type) {
 
     case "UNLOCK": {
+      // Only the extension popup should be able to trigger an auth flow
+      if (!isExtensionSender(sender)) return { error: "Untrusted sender" };
       const body = { level: msg.level, credential: msg.credential };
       if (msg.totp) body.totp = msg.totp;
       const res = await fetch(`${LVLS_SERVER}/api/auth/unlock`, {
@@ -48,22 +65,25 @@ async function handleMessage(msg) {
       const data = await res.json();
       if (res.ok && data.token) {
         await setToken(data.token);
-        return { success: true, devMode: data.devMode };
+        return { success: true };
       }
       return { success: false, error: data.error, totpRequired: data.totpRequired };
     }
 
     case "GET_TOKEN": {
+      if (!isExtensionSender(sender)) return { error: "Untrusted sender" };
       const token = await getToken();
       return { token };
     }
 
     case "LOGOUT": {
+      if (!isExtensionSender(sender)) return { error: "Untrusted sender" };
       await clearToken();
       return { success: true };
     }
 
     case "GET_SECRETS_BY_DOMAIN": {
+      if (!isTrustedSender(sender)) return { error: "Untrusted sender" };
       const token = await getToken();
       if (!token) return { error: "Not authenticated" };
       const res = await fetch(
@@ -78,6 +98,7 @@ async function handleMessage(msg) {
     }
 
     case "GET_ALL_SECRETS": {
+      if (!isExtensionSender(sender)) return { error: "Untrusted sender" };
       const token = await getToken();
       if (!token) return { error: "Not authenticated" };
       const res = await fetch(`${LVLS_SERVER}/api/secrets`, {
@@ -91,12 +112,14 @@ async function handleMessage(msg) {
     }
 
     case "GET_AUTH_STATUS": {
+      if (!isTrustedSender(sender)) return { error: "Untrusted sender" };
       const res = await fetch(`${LVLS_SERVER}/api/auth/status`).catch(() => null);
       if (!res) return { configured: {} };
       return await res.json();
     }
 
     case "OPEN_FILL_POPUP": {
+      if (!isContentScript(sender)) return { error: "Untrusted sender" };
       // Open the extension popup as a window when badge is clicked in the page
       const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       await chrome.windows.create({
@@ -110,6 +133,7 @@ async function handleMessage(msg) {
     }
 
     case "FILL_IN_PAGE": {
+      if (!isExtensionSender(sender)) return { error: "Untrusted sender" };
       // Ask the active tab's content script to fill the form
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.id) return { error: "No active tab" };

@@ -149,6 +149,7 @@ interface AuthModalProps {
   authLevel: number;
   targetLevel: number;
   totpStatus: Record<number, boolean>;
+  configuredLevels: Record<number, boolean>;
   authInput: string;
   setAuthInput: (v: string) => void;
   totpInput: string;
@@ -158,17 +159,18 @@ interface AuthModalProps {
   authLoading: boolean;
   handleAuth: (e?: React.FormEvent) => void;
   onClose: () => void;
+  onSetupAuth: () => void;
 }
 
-function AuthModal({ authLevel, targetLevel, totpStatus, authInput, setAuthInput, totpInput, setTotpInput, authError, setAuthError, authLoading, handleAuth, onClose }: AuthModalProps) {
+function AuthModal({ authLevel, targetLevel, totpStatus, configuredLevels, authInput, setAuthInput, totpInput, setTotpInput, authError, setAuthError, authLoading, handleAuth, onClose, onSetupAuth }: AuthModalProps) {
   const [showPass, setShowPass] = useState(false);
 
   if (authLevel === 0) return null;
 
   const levelColor = targetLevel === 3 ? "bg-zinc-800 text-zinc-300"
-    : targetLevel === 2 ? "bg-blue-900/30 text-blue-400"
-    : targetLevel === 1 ? "bg-amber-900/30 text-amber-400"
-    : "bg-red-900/30 text-red-400";
+    : targetLevel === 2 ? "bg-indigo-900/20 text-indigo-300"
+    : targetLevel === 1 ? "bg-amber-900/15 text-amber-300"
+    : "bg-rose-900/15 text-rose-300";
 
   const levelIcon = targetLevel === 3 ? <Lock className="w-10 h-10" />
     : targetLevel === 2 ? <Fingerprint className="w-10 h-10" />
@@ -181,9 +183,9 @@ function AuthModal({ authLevel, targetLevel, totpStatus, authInput, setAuthInput
     : "Enter your master passphrase";
 
   const btnClass = targetLevel === 3 ? "bg-zinc-700 hover:bg-zinc-600"
-    : targetLevel === 2 ? "bg-blue-600 hover:bg-blue-500"
-    : targetLevel === 1 ? "bg-amber-700 hover:bg-amber-600"
-    : "bg-red-700 hover:bg-red-600";
+    : targetLevel === 2 ? "bg-indigo-600 hover:bg-indigo-500"
+    : targetLevel === 1 ? "bg-amber-600 hover:bg-amber-500"
+    : "bg-rose-700 hover:bg-rose-600";
 
   return (
     <motion.div
@@ -224,6 +226,24 @@ function AuthModal({ authLevel, targetLevel, totpStatus, authInput, setAuthInput
             transition={{ duration: 0.25, delay: 0.1, ease: "easeOut" }}
           >{levelIcon}</motion.div>
         </div>
+        {targetLevel in configuredLevels && !configuredLevels[targetLevel] ? (
+          <>
+            <h2 className="text-2xl font-bold text-white text-center mb-2 tracking-tight">Not Configured</h2>
+            <p className="text-zinc-400 text-center mb-2 text-sm">
+              lvl{targetLevel} has no credential set up yet.
+            </p>
+            <p className="text-zinc-600 text-center mb-8 text-xs">
+              Set up authentication to unlock this security level and store secrets here.
+            </p>
+            <button
+              onClick={onSetupAuth}
+              className={`w-full font-medium py-3 rounded-xl transition-colors flex items-center justify-center gap-2 text-white ${btnClass}`}
+            >
+              <Key className="w-4 h-4" /> Set Up Authentication
+            </button>
+          </>
+        ) : (
+          <>
         <h2 className="text-2xl font-bold text-white text-center mb-2 tracking-tight">Unlock</h2>
         <p className="text-zinc-400 text-center mb-8 text-sm">{levelDesc}</p>
 
@@ -259,7 +279,7 @@ function AuthModal({ authLevel, targetLevel, totpStatus, authInput, setAuthInput
             />
           )}
 
-          {authError && <p className="text-red-400 text-sm text-center">{authError}</p>}
+          {authError && <p className="text-rose-300 text-sm text-center">{authError}</p>}
 
           <button
             type="submit"
@@ -272,6 +292,8 @@ function AuthModal({ authLevel, targetLevel, totpStatus, authInput, setAuthInput
             {authLoading ? "Verifying…" : "Authenticate"}
           </button>
         </form>
+          </>
+        )}
       </motion.div>
     </motion.div>
   );
@@ -298,8 +320,8 @@ function NukeVault() {
 
   if (phase === "done") {
     return (
-      <div className="bg-red-950/30 border border-red-900 rounded-xl px-5 py-4 text-center">
-        <p className="text-red-400 font-medium text-sm">Vault wiped. Reload the page to start fresh.</p>
+      <div className="bg-rose-950/20 border border-rose-900/50 rounded-xl px-5 py-4 text-center">
+        <p className="text-rose-300 font-medium text-sm">Vault wiped. Reload the page to start fresh.</p>
         <button onClick={() => window.location.reload()} className="mt-3 text-xs text-zinc-400 hover:text-white border border-zinc-700 px-3 py-1.5 rounded-lg transition-colors">
           Reload Now
         </button>
@@ -308,11 +330,11 @@ function NukeVault() {
   }
 
   return (
-    <div className="bg-red-950/20 border border-red-900/50 rounded-xl px-5 py-4 space-y-3">
+    <div className="bg-rose-950/10 border border-rose-900/40 rounded-xl px-5 py-4 space-y-3">
       <div className="flex items-start gap-3">
-        <AlertTriangle className="w-5 h-5 text-red-500 shrink-0 mt-0.5" />
+        <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
         <div>
-          <p className="text-sm font-medium text-red-400">Nuke Vault</p>
+          <p className="text-sm font-medium text-rose-300">Nuke Vault</p>
           <p className="text-xs text-zinc-500 mt-0.5">
             Permanently deletes ALL secrets, credentials, logs, and KEM keys. This cannot be undone.
           </p>
@@ -322,7 +344,7 @@ function NukeVault() {
       {phase === "idle" && (
         <button
           onClick={() => setPhase("confirm")}
-          className="text-xs text-red-400 border border-red-900 hover:border-red-700 hover:bg-red-950 px-4 py-2 rounded-lg transition-colors"
+          className="text-xs text-rose-300 border border-rose-900/50 hover:border-rose-700 hover:bg-rose-950/20 px-4 py-2 rounded-lg transition-colors"
         >
           Wipe Everything
         </button>
@@ -331,21 +353,21 @@ function NukeVault() {
       {phase === "confirm" && (
         <div className="space-y-2">
           <p className="text-xs text-zinc-400">
-            Type <span className="font-mono text-red-400 font-bold">{CONFIRM_PHRASE}</span> to confirm:
+            Type <span className="font-mono text-rose-300 font-bold">{CONFIRM_PHRASE}</span> to confirm:
           </p>
           <div className="flex gap-2">
             <input
               type="text"
               value={confirmText}
               onChange={e => setConfirmText(e.target.value)}
-              className="flex-1 bg-zinc-950 border border-red-900 rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-red-500"
+              className="flex-1 bg-zinc-950 border border-rose-900/40 rounded-lg px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-rose-500/50"
               placeholder={CONFIRM_PHRASE}
               autoFocus
             />
             <button
               onClick={nuke}
               disabled={confirmText !== CONFIRM_PHRASE}
-              className="bg-red-700 hover:bg-red-600 disabled:opacity-30 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              className="bg-rose-800 hover:bg-rose-700 disabled:opacity-30 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
             >
               {phase === "nuking" ? "Wiping…" : "Confirm Nuke"}
             </button>
@@ -363,12 +385,17 @@ function NukeVault() {
 }
 
 // ---------- Credential Setup Component ----------
-function CredentialSetup({ authLevel, sessionToken }: { authLevel: number; sessionToken: string | null }) {
+function CredentialSetup({ authLevel, sessionToken, configuredLevels, onCredentialSaved }: {
+  authLevel: number;
+  sessionToken: string | null;
+  configuredLevels: Record<number, boolean>;
+  onCredentialSaved: (level: number) => void;
+}) {
   const LEVELS = [
     { level: 3, label: "lvl3 — PIN", color: "text-zinc-300", borderColor: "border-zinc-700", hint: "Numeric digits only, min 6", inputMode: "numeric" as const, isPin: true },
-    { level: 2, label: "lvl2 — Professional", color: "text-blue-400", borderColor: "border-blue-900", hint: "Alphanumeric, min 6 chars (letters + numbers)", inputMode: "text" as const, isPin: false },
-    { level: 1, label: "lvl1 — Personal", color: "text-amber-400", borderColor: "border-amber-900", hint: "Alphanumeric, min 6 chars (letters + numbers)", inputMode: "text" as const, isPin: false },
-    { level: 0, label: "lvl0 — Critical", color: "text-red-400", borderColor: "border-red-900", hint: "Alphanumeric, min 6 chars (letters + numbers)", inputMode: "text" as const, isPin: false },
+    { level: 2, label: "lvl2 — Professional", color: "text-indigo-300", borderColor: "border-indigo-800/50", hint: "Alphanumeric, min 6 chars (letters + numbers)", inputMode: "text" as const, isPin: false },
+    { level: 1, label: "lvl1 — Personal", color: "text-amber-300", borderColor: "border-amber-800/50", hint: "Alphanumeric, min 6 chars (letters + numbers)", inputMode: "text" as const, isPin: false },
+    { level: 0, label: "lvl0 — Critical", color: "text-rose-300", borderColor: "border-rose-800/50", hint: "Alphanumeric, min 6 chars (letters + numbers)", inputMode: "text" as const, isPin: false },
   ];
 
   const [values, setValues] = React.useState<Record<number, { cred: string; confirm: string; saving: boolean; result: string }>>({
@@ -377,6 +404,8 @@ function CredentialSetup({ authLevel, sessionToken }: { authLevel: number; sessi
     2: { cred: "", confirm: "", saving: false, result: "" },
     3: { cred: "", confirm: "", saving: false, result: "" },
   });
+
+  const statusLoaded = Object.keys(configuredLevels).length > 0;
 
   const save = async (level: number) => {
     const { cred, confirm } = values[level];
@@ -396,6 +425,7 @@ function CredentialSetup({ authLevel, sessionToken }: { authLevel: number; sessi
       const data = await res.json();
       if (res.ok) {
         setValues(prev => ({ ...prev, [level]: { cred: "", confirm: "", saving: false, result: "✓ Saved" } }));
+        onCredentialSaved(level);
       } else {
         setResult(level, data.error || "Failed");
       }
@@ -407,22 +437,29 @@ function CredentialSetup({ authLevel, sessionToken }: { authLevel: number; sessi
   const setResult = (level: number, result: string) =>
     setValues(prev => ({ ...prev, [level]: { ...prev[level], saving: false, result } }));
 
-  const unlockedLevels = LEVELS.filter(({ level }) => authLevel <= level);
+  // Show unconfigured levels for everyone (onboarding), configured levels only if authenticated at that level
+  const visibleLevels = LEVELS.filter(({ level }) =>
+    !statusLoaded || !configuredLevels[level] || authLevel <= level
+  );
 
-  if (unlockedLevels.length === 0) {
+  if (visibleLevels.length === 0) {
     return <p className="text-xs text-zinc-600">Unlock a level first to manage its credential.</p>;
   }
 
   return (
     <div className="space-y-3">
-      {unlockedLevels.map(({ level, label, color, borderColor, hint, inputMode, isPin }) => (
-        <details key={level} className={`bg-zinc-950 border ${borderColor} rounded-xl`}>
+      {visibleLevels.map(({ level, label, color, borderColor, hint, inputMode, isPin }) => {
+        const isNew = !statusLoaded || !configuredLevels[level];
+        return (
+        <details key={level} open={isNew} className={`bg-zinc-950 border ${borderColor} rounded-xl`}>
           <summary className="flex items-center justify-between px-5 py-4 cursor-pointer list-none">
             <div>
               <p className={`text-sm font-medium ${color}`}>{label}</p>
               <p className="text-xs text-zinc-600 mt-0.5">{hint}</p>
             </div>
-            <span className="text-xs text-zinc-400 border border-zinc-700 px-3 py-1.5 rounded-lg">Change ▾</span>
+            <span className="text-xs text-zinc-400 border border-zinc-700 px-3 py-1.5 rounded-lg">
+              {isNew ? "Set Up ▾" : "Change ▾"}
+            </span>
           </summary>
           <div className="px-5 pb-5 pt-3 border-t border-zinc-800 space-y-3">
             <div>
@@ -435,7 +472,7 @@ function CredentialSetup({ authLevel, sessionToken }: { authLevel: number; sessi
                 value={values[level].cred}
                 onChange={e => setValues(prev => ({ ...prev, [level]: { ...prev[level], cred: e.target.value, result: "" } }))}
                 className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-600"
-                placeholder={isPin ? "e.g. 123456" : "e.g. MyVault2a"}
+                placeholder={isPin ? "Min 6 digits" : "Min 6 characters"}
               />
             </div>
             <div>
@@ -446,7 +483,7 @@ function CredentialSetup({ authLevel, sessionToken }: { authLevel: number; sessi
                 value={values[level].confirm}
                 onChange={e => setValues(prev => ({ ...prev, [level]: { ...prev[level], confirm: e.target.value, result: "" } }))}
                 className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-600"
-                placeholder="Repeat credential"
+                placeholder="Repeat to confirm"
               />
             </div>
             <div className="flex items-center gap-3">
@@ -458,14 +495,15 @@ function CredentialSetup({ authLevel, sessionToken }: { authLevel: number; sessi
                 {values[level].saving ? "Saving…" : "Save Credential"}
               </button>
               {values[level].result && (
-                <span className={`text-xs ${values[level].result.startsWith("✓") ? "text-violet-600" : "text-red-400"}`}>
+                <span className={`text-xs ${values[level].result.startsWith("✓") ? "text-violet-600" : "text-rose-300"}`}>
                   {values[level].result}
                 </span>
               )}
             </div>
           </div>
         </details>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -561,17 +599,17 @@ function TotpCodeDisplay({ seed }: { seed: string }) {
 
   return (
     <div className="flex items-center gap-2.5">
-      <span className={`font-mono text-sm font-bold tracking-[0.3em] ${urgent ? "text-red-400" : "text-violet-600"}`}>
+      <span className={`font-mono text-sm font-bold tracking-[0.3em] ${urgent ? "text-rose-300" : "text-violet-600"}`}>
         {code.slice(0, 3)} {code.slice(3)}
       </span>
       <div className="flex items-center gap-1">
         <div className="w-14 h-1 bg-zinc-800 rounded-full overflow-hidden">
           <div
-            className={`h-full rounded-full transition-all duration-1000 ${urgent ? "bg-red-500" : "bg-violet-600"}`}
+            className={`h-full rounded-full transition-all duration-1000 ${urgent ? "bg-rose-400" : "bg-violet-600"}`}
             style={{ width: `${pct}%` }}
           />
         </div>
-        <span className={`text-xs font-mono tabular-nums w-5 ${urgent ? "text-red-400" : "text-zinc-500"}`}>{secsLeft}s</span>
+        <span className={`text-xs font-mono tabular-nums w-5 ${urgent ? "text-rose-300" : "text-zinc-500"}`}>{secsLeft}s</span>
       </div>
       <button onClick={() => copyToClipboard(code)} className="text-zinc-500 hover:text-zinc-300 transition-colors" title="Copy code">
         <Copy className="w-3.5 h-3.5" />
@@ -613,6 +651,9 @@ export default function App() {
   const [sessionCredentials, setSessionCredentials] = useState<Record<number, string>>({});
   const [editingSecret, setEditingSecret] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({ name: "", type: "password", tags: "", url: "", username: "", folder: "" });
+
+  // Which levels have credentials configured
+  const [configuredLevels, setConfiguredLevels] = useState<Record<number, boolean>>({});
 
   // TOTP setup state
   const [totpSetup, setTotpSetup] = useState<{ level: number; secret: string; uri: string } | null>(null);
@@ -672,25 +713,29 @@ export default function App() {
     };
   }, [authLevel]);
 
-  // Fetch TOTP status + session TTLs for settings panel
+  // Fetch auth status — which levels are configured, TOTP state, session TTLs
   useEffect(() => {
-    fetch("/api/auth/status")
+    if (!sessionToken) return;
+    fetch("/api/auth/status", { headers: { Authorization: `Bearer ${sessionToken}` } })
       .then(r => r.json())
       .then(data => {
         if (data.configured) {
           const status: Record<number, boolean> = {};
           const ttls: Record<number, string> = {};
+          const configured: Record<number, boolean> = { 0: false, 1: false, 2: false, 3: false };
           for (const [lvl, info] of Object.entries(data.configured as Record<string, any>)) {
             const l = parseInt(lvl);
             status[l] = info.totpEnabled;
             ttls[l] = info.sessionTtl || "24h";
+            configured[l] = true;
           }
           setTotpStatus(status);
           setSessionTtls(prev => ({ ...prev, ...ttls }));
+          setConfiguredLevels(configured);
         }
       })
       .catch(() => {});
-  }, [showSettings]);
+  }, [sessionToken, showSettings]);
 
   const fetchSecrets = async () => {
     try {
@@ -998,9 +1043,9 @@ export default function App() {
   const getLevelInfo = (level: number) => {
     switch(level) {
       case 3: return { name: "Everyday Info", color: "text-zinc-300", bg: "bg-zinc-800", desc: "Social profiles, Wi-Fi, car plates, subs — low impact if exposed" };
-      case 2: return { name: "Professional / Social", color: "text-blue-400", bg: "bg-blue-900/30", desc: "API keys, IAM roles, DAO voting, AV access" };
-      case 1: return { name: "Personal / Infra", color: "text-amber-400", bg: "bg-amber-900/30", desc: "Financial APIs, HealthKit/BCI data, SSH, smart home admin" };
-      case 0: return { name: "Critical / Private", color: "text-red-400", bg: "bg-red-900/30", desc: "Seed phrases, master identity hashes, break-glass keys" };
+      case 2: return { name: "Professional / Social", color: "text-indigo-300", bg: "bg-indigo-900/20", desc: "API keys, IAM roles, DAO voting, AV access" };
+      case 1: return { name: "Personal / Infra", color: "text-amber-300", bg: "bg-amber-900/15", desc: "Financial APIs, HealthKit/BCI data, SSH, smart home admin" };
+      case 0: return { name: "Critical / Private", color: "text-rose-300", bg: "bg-rose-900/15", desc: "Seed phrases, master identity hashes, break-glass keys" };
       default: return { name: "Unknown", color: "text-zinc-500", bg: "bg-zinc-800", desc: "" };
     }
   };
@@ -1015,6 +1060,7 @@ export default function App() {
           authLevel={authLevel}
           targetLevel={pendingAuthLevel}
           totpStatus={totpStatus}
+          configuredLevels={configuredLevels}
           authInput={authInput}
           setAuthInput={setAuthInput}
           totpInput={totpInput}
@@ -1024,6 +1070,7 @@ export default function App() {
           authLoading={authLoading}
           handleAuth={handleAuth}
           onClose={() => { setShowAuthModal(false); setAuthInput(""); setAuthError(""); setTotpInput(""); }}
+          onSetupAuth={() => { setShowAuthModal(false); setAuthInput(""); setAuthError(""); setTotpInput(""); setShowSettings(true); setSettingsTab("auth"); }}
         />
         )}
       </AnimatePresence>
@@ -1548,14 +1595,14 @@ export default function App() {
                                     setEditingSecret(secret.id);
                                     setEditForm({ name: secret.name, type: secret.secret_type || 'custom', tags: secret.tags.join(', '), url: secret.url || '', username: secret.username || '', folder: secret.folder || '' });
                                   }}
-                                  className="text-zinc-500 hover:text-blue-400 opacity-0 group-hover:opacity-100 transition-all p-1"
+                                  className="text-zinc-500 hover:text-indigo-300 opacity-0 group-hover:opacity-100 transition-all p-1"
                                   title="Edit Secret"
                                 >
                                   <Pencil className="w-4 h-4" />
                                 </button>
                                 <button
                                   onClick={() => handleDeleteSecret(secret.id)}
-                                  className="text-zinc-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all p-1"
+                                  className="text-zinc-500 hover:text-rose-300 opacity-0 group-hover:opacity-100 transition-all p-1"
                                   title="Delete Secret"
                                 >
                                   <Trash2 className="w-4 h-4" />
@@ -1723,7 +1770,7 @@ export default function App() {
         </main>
       </div>
 
-      {/* Settings Panel */}
+      {/* Settings Modal */}
       <AnimatePresence>
         {showSettings && (
           <>
@@ -1733,21 +1780,22 @@ export default function App() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setShowSettings(false)}
-              className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40"
+              className="fixed inset-0 bg-black/70 backdrop-blur-md z-40"
             />
-            {/* Slide-over panel */}
+            {/* Centered modal */}
+            <div className="fixed inset-0 flex items-center justify-center z-50 p-6 pointer-events-none">
             <motion.div
-              initial={{ x: "100%", opacity: 0 }}
-              animate={{ x: 0, opacity: 1 }}
-              exit={{ x: "100%", opacity: 0 }}
-              transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
-              className="fixed right-0 top-0 h-full w-full max-w-xl bg-black border-l border-zinc-900 z-50 flex flex-col shadow-2xl"
+              initial={{ opacity: 0, scale: 0.97, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.97, y: 10 }}
+              transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+              className="bg-zinc-950 border border-zinc-800/70 rounded-2xl w-full max-w-2xl max-h-[88vh] flex flex-col shadow-2xl pointer-events-auto"
             >
               {/* Header */}
-              <div className="flex items-center justify-between px-8 py-6 border-b border-zinc-800">
+              <div className="flex items-center justify-between px-7 py-5 border-b border-zinc-800/60 shrink-0">
                 <div>
-                  <h2 className="text-xl font-bold text-white tracking-tight">Settings</h2>
-                  <p className="text-zinc-500 text-sm mt-0.5">Configure vault behaviour &amp; security policies</p>
+                  <h2 className="text-lg font-bold text-white tracking-tight">Settings</h2>
+                  <p className="text-zinc-500 text-xs mt-0.5">Vault security &amp; authentication</p>
                 </div>
                 <button
                   onClick={() => setShowSettings(false)}
@@ -1758,7 +1806,7 @@ export default function App() {
               </div>
 
               {/* Tabs */}
-              <div className="flex gap-1 px-8 pt-4 border-b border-zinc-800">
+              <div className="flex gap-1 px-7 pt-3 border-b border-zinc-800/60 shrink-0">
                 {(["auth", "docs"] as const).map((t) => (
                   <button
                     key={t}
@@ -1769,39 +1817,45 @@ export default function App() {
                         : "text-zinc-500 hover:text-zinc-300"
                     }`}
                   >
-                    {t === "auth" ? "Authentication" : "Security Docs"}
+                    {t === "auth" ? "Security" : "About"}
                   </button>
                 ))}
               </div>
 
               {/* Content */}
-              <div className="flex-1 overflow-y-auto px-8 py-6 space-y-8">
+              <div className="flex-1 overflow-y-auto px-7 py-5 space-y-7">
 
                 {settingsTab === "auth" && (
                   <>
-                    {/* Section: Level Credentials */}
+                    {/* Section: Credentials */}
                     <section>
-                      <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-widest mb-4">Level Credentials</h3>
-                      <p className="text-xs text-zinc-600 mb-3">
-                        Set your own credentials to replace the dev defaults. lvl3: numeric PIN (min 6 digits). lvl0–lvl2: alphanumeric passphrase (min 6 chars, must contain letters + numbers).
+                      <h3 className="text-sm font-semibold text-zinc-200 mb-1">Credentials</h3>
+                      <p className="text-xs text-zinc-500 mb-4">
+                        Each level has its own credential. lvl3 uses a numeric PIN. lvl0–2 use a passphrase (letters + numbers, min 6 characters).
                       </p>
-                      <CredentialSetup authLevel={authLevel} sessionToken={sessionToken} />
+                      <CredentialSetup
+                        authLevel={authLevel}
+                        sessionToken={sessionToken}
+                        configuredLevels={configuredLevels}
+                        onCredentialSaved={(level) => setConfiguredLevels(prev => ({ ...prev, [level]: true }))}
+                      />
                     </section>
 
-                    {/* Section: Session TTL */}
-                    <section>
-                      <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-widest mb-4">Session Expiry (TTL)</h3>
-                      <div className="space-y-3">
+                    {/* Section: Session Duration */}
+                    <section className="pt-6 border-t border-zinc-800/60">
+                      <h3 className="text-sm font-semibold text-zinc-200 mb-1">Session Duration</h3>
+                      <p className="text-xs text-zinc-500 mb-4">How long you stay authenticated after unlocking a level. Higher levels expire sooner by default.</p>
+                      <div className="space-y-2">
                         {[
-                          { level: 3, label: "lvl3 Session", options: ["1h", "8h", "24h", "Never"] },
-                          { level: 2, label: "lvl2 Session", options: ["30m", "1h", "4h", "8h"] },
-                          { level: 1, label: "lvl1 Session", options: ["15m", "30m", "1h", "2h"] },
-                          { level: 0, label: "lvl0 Session", options: ["Never cached"] },
-                        ].filter(({ level }) => authLevel <= level).map(({ level, label, options }) => (
-                          <div key={level} className="flex items-center justify-between bg-zinc-950 border border-zinc-800 px-5 py-4 rounded-xl">
+                          { level: 3, label: "Level 3", sublabel: "Everyday access", options: ["1h", "8h", "24h", "Never"] },
+                          { level: 2, label: "Level 2", sublabel: "Professional", options: ["30m", "1h", "4h", "8h"] },
+                          { level: 1, label: "Level 1", sublabel: "Personal", options: ["15m", "30m", "1h", "2h"] },
+                          { level: 0, label: "Level 0", sublabel: "Critical — never cached", options: ["Never cached"] },
+                        ].filter(({ level }) => authLevel <= level).map(({ level, label, sublabel, options }) => (
+                          <div key={level} className="flex items-center justify-between bg-zinc-900/50 border border-zinc-800/80 px-4 py-3.5 rounded-xl">
                             <div>
-                              <p className="text-sm font-medium text-zinc-300">{label}</p>
-                              <p className="text-xs text-zinc-500 mt-0.5">Token expires after unlock</p>
+                              <p className="text-sm font-medium text-zinc-200">{label}</p>
+                              <p className="text-xs text-zinc-500 mt-0.5">{sublabel}</p>
                             </div>
                             <select
                               value={sessionTtls[level] || options[0]}
@@ -1824,80 +1878,23 @@ export default function App() {
                       </div>
                     </section>
 
-                    {/* Section: Auto-Lock */}
-                    <section>
-                      <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-widest mb-4">Auto-Lock Triggers</h3>
-                      <div className="space-y-3">
+                    {/* Section: Two-Factor Authentication */}
+                    <section className="pt-6 border-t border-zinc-800/60">
+                      <h3 className="text-sm font-semibold text-zinc-200 mb-1">Two-Factor Authentication</h3>
+                      <p className="text-xs text-zinc-500 mb-4">Require a one-time code at unlock. Works with any TOTP app — Google Authenticator, Authy, 1Password, etc.</p>
+                      <div className="space-y-2">
                         {[
-                          { id: "lock-screen", label: "Lock on screen lock", desc: "Lock vault when OS screen locks", default: true },
-                          { id: "lock-idle", label: "Lock on idle", desc: "Lock after system idle timeout", default: true },
-                          { id: "lock-suspend", label: "Lock on suspend/sleep", desc: "Lock vault on system suspend", default: true },
-                          { id: "lock-focus", label: "Lock on app focus loss", desc: "Lock lvl0 when window loses focus", default: false },
-                        ].map(({ id, label, desc, default: def }) => (
-                          <label key={id} className="flex items-center justify-between bg-zinc-950 border border-zinc-800 px-5 py-4 rounded-xl cursor-pointer group">
-                            <div>
-                              <p className="text-sm font-medium text-zinc-200">{label}</p>
-                              <p className="text-xs text-zinc-500 mt-0.5">{desc}</p>
-                            </div>
-                            <div className={`w-10 h-6 rounded-full transition-colors flex items-center px-1 ${ def ? 'bg-violet-600' : 'bg-zinc-700'}`}>
-                              <div className={`w-4 h-4 rounded-full bg-white transition-transform ${def ? 'translate-x-4' : 'translate-x-0'}`} />
-                            </div>
-                          </label>
-                        ))}
-                      </div>
-                    </section>
-
-                    {/* Section: Lockout Policy */}
-                    <section>
-                      <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-widest mb-4">Lockout Policy</h3>
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between bg-zinc-950 border border-zinc-800 px-5 py-4 rounded-xl">
-                          <div>
-                            <p className="text-sm font-medium text-zinc-200">Failed attempt limit</p>
-                            <p className="text-xs text-zinc-500 mt-0.5">Lock vault after N failed auth attempts</p>
-                          </div>
-                          <select defaultValue="5" className="bg-zinc-950 border border-zinc-700 text-sm text-zinc-300 rounded-lg px-3 py-1.5 focus:outline-none focus:border-violet-600">
-                            {["3", "5", "10", "Unlimited"].map(o => <option key={o}>{o}</option>)}
-                          </select>
-                        </div>
-                        <div className="flex items-center justify-between bg-zinc-950 border border-zinc-800 px-5 py-4 rounded-xl">
-                          <div>
-                            <p className="text-sm font-medium text-zinc-200">Lockout duration</p>
-                            <p className="text-xs text-zinc-500 mt-0.5">How long to lock out after limit reached</p>
-                          </div>
-                          <select defaultValue="5m" className="bg-zinc-950 border border-zinc-700 text-sm text-zinc-300 rounded-lg px-3 py-1.5 focus:outline-none focus:border-violet-600">
-                            {["1m", "5m", "15m", "1h", "Forever"].map(o => <option key={o}>{o}</option>)}
-                          </select>
-                        </div>
-                        <div className="flex items-center justify-between bg-zinc-950 border border-zinc-800 px-5 py-4 rounded-xl">
-                          <div>
-                            <p className="text-sm font-medium text-zinc-200">Wipe on max failures</p>
-                            <p className="text-xs text-zinc-500 mt-0.5">Nuke all cached session keys after repeated failures</p>
-                          </div>
-                          <div className="w-10 h-6 rounded-full bg-zinc-700 flex items-center px-1">
-                            <div className="w-4 h-4 rounded-full bg-white" />
-                          </div>
-                        </div>
-                      </div>
-                    </section>
-
-                    {/* Section: TOTP */}
-                    <section>
-                      <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-widest mb-4">TOTP Authenticator (2FA)</h3>
-                      <p className="text-xs text-zinc-600 mb-3">Enable TOTP for any level using Google Authenticator, Authy, or any RFC 6238-compatible app.</p>
-                      <div className="space-y-3">
-                        {[
-                          { level: 3, label: "lvl3 — Everyday", color: "text-zinc-300" },
-                          { level: 2, label: "lvl2 — Professional", color: "text-blue-400" },
-                          { level: 1, label: "lvl1 — Personal", color: "text-amber-400" },
-                          { level: 0, label: "lvl0 — Critical", color: "text-red-400" },
+                          { level: 3, label: "Level 3", color: "text-zinc-300" },
+                          { level: 2, label: "Level 2", color: "text-indigo-300" },
+                          { level: 1, label: "Level 1", color: "text-amber-300" },
+                          { level: 0, label: "Level 0", color: "text-rose-300" },
                         ].filter(({ level }) => authLevel <= level).map(({ level, label, color }) => (
-                          <div key={level} className="bg-zinc-950 border border-zinc-800 px-5 py-4 rounded-xl">
+                          <div key={level} className="bg-zinc-900/50 border border-zinc-800/80 px-4 py-3.5 rounded-xl">
                             <div className="flex items-center justify-between">
                               <div>
                                 <p className={`text-sm font-medium ${color}`}>{label}</p>
                                 <p className="text-xs text-zinc-500 mt-0.5">
-                                  {totpStatus[level] ? "TOTP enabled — required on unlock" : "TOTP not configured"}
+                                  {totpStatus[level] ? "Active — required at every unlock" : "Not enabled"}
                                 </p>
                               </div>
                               <div className="flex gap-2">
@@ -1905,7 +1902,7 @@ export default function App() {
                                   <button
                                     onClick={() => handleTotpDisable(level)}
                                     disabled={authLevel > level}
-                                    className="text-xs text-red-400 hover:text-red-300 border border-red-900 hover:border-red-700 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                    className="text-xs text-rose-300 hover:text-rose-200 border border-rose-900/40 hover:border-rose-700/60 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                                   >
                                     Disable
                                   </button>
@@ -1913,9 +1910,9 @@ export default function App() {
                                   <button
                                     onClick={() => handleTotpSetup(level)}
                                     disabled={authLevel > level}
-                                    className="text-xs text-violet-600 hover:text-violet-600 border border-violet-600 hover:border-violet-600 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                                    className="text-xs text-violet-400 hover:text-violet-300 border border-violet-800 hover:border-violet-600 px-3 py-1.5 rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                                   >
-                                    Set Up
+                                    Enable
                                   </button>
                                 )}
                               </div>
@@ -1925,27 +1922,23 @@ export default function App() {
                             {totpSetup?.level === level && (
                               <div className="mt-4 pt-4 border-t border-zinc-800 space-y-4">
                                 <p className="text-xs text-zinc-400">
-                                  Scan the QR code in your authenticator app, or manually enter the secret key below.
-                                  Then enter the 6-digit code to confirm.
+                                  Add the key below to your authenticator app, then enter the 6-digit code it generates to confirm.
                                 </p>
                                 <div className="bg-zinc-950 rounded-lg p-3 space-y-2">
-                                  <p className="text-xs text-zinc-500 uppercase tracking-wider">Secret Key</p>
+                                  <p className="text-xs text-zinc-500 font-medium">Setup Key</p>
                                   <div className="flex items-center gap-2">
-                                    <code className="text-violet-600 font-mono text-sm break-all flex-1">{totpSetup.secret}</code>
+                                    <code className="text-violet-400 font-mono text-sm break-all flex-1">{totpSetup.secret}</code>
                                     <button
                                       onClick={() => copyToClipboard(totpSetup.secret)}
                                       className="text-zinc-500 hover:text-white transition-colors shrink-0"
-                                      title="Copy secret"
+                                      title="Copy key"
                                     >
                                       <Copy className="w-4 h-4" />
                                     </button>
                                   </div>
-                                  <p className="text-xs text-zinc-600 pt-1">
-                                    Or{" "}
-                                    <a href={totpSetup.uri} className="text-violet-600 hover:underline">
-                                      open in authenticator app
-                                    </a>
-                                  </p>
+                                  <a href={totpSetup.uri} className="text-xs text-violet-400 hover:text-violet-300 hover:underline block pt-1">
+                                    Open in authenticator app
+                                  </a>
                                 </div>
                                 <div className="flex gap-2">
                                   <input
@@ -1954,7 +1947,7 @@ export default function App() {
                                     maxLength={6}
                                     value={totpConfirmCode}
                                     onChange={e => { setTotpConfirmCode(e.target.value); setTotpConfirmError(""); }}
-                                    placeholder="Enter 6-digit code"
+                                    placeholder="000 000"
                                     className="flex-1 bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white font-mono tracking-[0.5em] focus:outline-none focus:border-violet-600 text-center"
                                   />
                                   <button
@@ -1972,7 +1965,7 @@ export default function App() {
                                   </button>
                                 </div>
                                 {totpConfirmError && (
-                                  <p className="text-red-400 text-xs">{totpConfirmError}</p>
+                                  <p className="text-rose-300 text-xs">{totpConfirmError}</p>
                                 )}
                               </div>
                             )}
@@ -1981,43 +1974,18 @@ export default function App() {
                       </div>
                     </section>
 
-                    {/* Section: Security Key */}
-                    <section>
-                      <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-widest mb-4">Security Keys (3FA)</h3>
-                      <div className="space-y-3">
-                        <div className="bg-zinc-950 border border-zinc-800 px-5 py-4 rounded-xl">
-                          <div className="flex items-center justify-between mb-3">
-                            <p className="text-sm font-medium text-zinc-200">Registered keys</p>
-                            <button className="text-xs text-violet-600 hover:text-violet-600 border border-violet-600 hover:border-violet-600 px-3 py-1.5 rounded-lg transition-colors flex items-center gap-1.5">
-                              <Key className="w-3.5 h-3.5" /> Register New
-                            </button>
-                          </div>
-                          <div className="text-xs text-zinc-500 italic">No security keys registered yet.</div>
-                        </div>
-                        <div className="flex items-center justify-between bg-zinc-950 border border-zinc-800 px-5 py-4 rounded-xl">
-                          <div>
-                            <p className="text-sm font-medium text-zinc-200">Require key touch</p>
-                            <p className="text-xs text-zinc-500 mt-0.5">Require physical key tap for each auth</p>
-                          </div>
-                          <div className="w-10 h-6 rounded-full bg-violet-600 flex items-center px-1">
-                            <div className="w-4 h-4 rounded-full bg-white translate-x-4" />
-                          </div>
-                        </div>
-                      </div>
-                    </section>
-
-                    {/* Section: Advanced */}
-                    <section>
-                      <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-widest mb-4">Advanced</h3>
-                      <div className="space-y-3">
+                    {/* Section: Privacy */}
+                    <section className="pt-6 border-t border-zinc-800/60">
+                      <h3 className="text-sm font-semibold text-zinc-200 mb-1">Privacy</h3>
+                      <p className="text-xs text-zinc-500 mb-4">Controls how the vault handles sensitive data in memory and the clipboard.</p>
+                      <div className="space-y-2">
                         {[
-                          { id: "mem-lock", label: "mlock pinned memory", desc: "Prevent Lvl 0/1 keys from being swapped to disk", default: true },
-                          { id: "zero-on-lock", label: "Zero memory on lock", desc: "Overwrite session keys in RAM when vault locks", default: true },
-                          { id: "audit-reveal", label: "Log secret reveals", desc: "Write to session log whenever a secret value is revealed", default: false },
-                          { id: "clipboard-clear", label: "Auto-clear clipboard", desc: "Clear clipboard 30s after copying a secret value", default: true },
-                          { id: "anti-phish", label: "Anti-phishing protection", desc: "Warn when vault URL does not match registered domain", default: true },
+                          { id: "mem-lock", label: "Memory protection", desc: "Keep decrypted keys in locked memory — never swapped to disk", default: true },
+                          { id: "zero-on-lock", label: "Wipe on lock", desc: "Securely clear session keys from memory when the vault locks", default: true },
+                          { id: "clipboard-clear", label: "Clear clipboard automatically", desc: "Wipe the clipboard 30 seconds after copying a secret", default: true },
+                          { id: "audit-reveal", label: "Log when secrets are revealed", desc: "Record in the session log each time a secret value is shown", default: false },
                         ].map(({ id, label, desc, default: def }) => (
-                          <label key={id} className="flex items-center justify-between bg-zinc-950 border border-zinc-800 px-5 py-4 rounded-xl cursor-pointer">
+                          <label key={id} className="flex items-center justify-between bg-zinc-900/50 border border-zinc-800/80 px-4 py-3.5 rounded-xl cursor-pointer">
                             <div>
                               <p className="text-sm font-medium text-zinc-200">{label}</p>
                               <p className="text-xs text-zinc-500 mt-0.5">{desc}</p>
@@ -2031,8 +1999,9 @@ export default function App() {
                     </section>
 
                     {/* Section: Danger Zone */}
-                    <section>
-                      <h3 className="text-xs font-semibold text-red-500/70 uppercase tracking-widest mb-4">Danger Zone</h3>
+                    <section className="pt-6 border-t border-zinc-800/60">
+                      <h3 className="text-sm font-semibold text-rose-300 mb-1">Danger Zone</h3>
+                      <p className="text-xs text-zinc-500 mb-4">Irreversible actions. This cannot be undone.</p>
                       <NukeVault />
                     </section>
                   </>
@@ -2040,41 +2009,31 @@ export default function App() {
 
                 {settingsTab === "docs" && (
                   <>
-                    <div className="flex items-start gap-4 bg-amber-500/10 border border-amber-500/20 p-4 rounded-xl shadow-sm">
-                      <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
-                      <div>
-                        <h4 className="text-amber-500 font-medium mb-1">Security Compliance Pack</h4>
-                        <p className="text-amber-500/80 text-sm">These documents would be populated with your specific deployment details in production.</p>
+                    <section>
+                      <h3 className="text-sm font-semibold text-zinc-200 mb-1">About lvls</h3>
+                      <p className="text-xs text-zinc-500 mb-4">Self-hosted key vault with four security clearance levels. Secrets are encrypted client-side before leaving your browser.</p>
+                      <div className="space-y-2">
+                        {[
+                          { label: "Encryption", value: "ML-KEM-768 (post-quantum) + AES-256-GCM" },
+                          { label: "Password hashing", value: "Argon2id — memory-hard, brute-force resistant" },
+                          { label: "Sessions", value: "JWT — HMAC-signed, per-level TTL, revocable" },
+                          { label: "Transport", value: "HTTPS — TLS with HSTS enforced" },
+                          { label: "2FA", value: "TOTP (RFC 6238) — replay attack protected" },
+                          { label: "Rate limiting", value: "Per-IP, DB-persisted, survives restarts" },
+                        ].map(({ label, value }) => (
+                          <div key={label} className="flex items-start gap-4 bg-zinc-900/50 border border-zinc-800/80 px-4 py-3 rounded-xl">
+                            <p className="text-xs font-medium text-zinc-400 w-36 shrink-0 pt-0.5">{label}</p>
+                            <p className="text-xs text-zinc-300">{value}</p>
+                          </div>
+                        ))}
                       </div>
-                    </div>
-                    <div className="grid grid-cols-1 gap-3">
-                      {[
-                        "01_Privacy_Governance_Framework.md",
-                        "02_Data_Classification_Policy.md",
-                        "03_Access_Control_Policy.md",
-                        "04_Incident_Response_Plan.md",
-                        "05_Data_Retention_Schedule.md",
-                        "06_Third_Party_Risk_Management.md",
-                        "07_Employee_Training_Log.md",
-                        "08_Privacy_Impact_Assessment_Template.md",
-                      ].map((doc) => (
-                        <div key={doc} className="flex items-center gap-4 bg-zinc-950 border border-zinc-800 px-5 py-4 rounded-xl hover:border-zinc-700 hover:bg-zinc-800/50 transition-all cursor-pointer group">
-                          <div className="p-2 bg-zinc-950 rounded-lg group-hover:bg-violet-600/10 transition-colors shrink-0">
-                            <FileText className="w-4 h-4 text-zinc-500 group-hover:text-violet-600 transition-colors" />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-zinc-200 truncate">{doc}</p>
-                            <p className="text-xs text-zinc-500 mt-0.5">Last updated: Today</p>
-                          </div>
-                          <Shield className="w-4 h-4 text-zinc-600 group-hover:text-violet-600 transition-colors shrink-0" />
-                        </div>
-                      ))}
-                    </div>
+                    </section>
                   </>
                 )}
 
               </div>
             </motion.div>
+            </div>
           </>
         )}
       </AnimatePresence>

@@ -11,14 +11,20 @@ import argon2 from "argon2";
 import jwt from "jsonwebtoken";
 
 const app = express();
-const PORT = 3000;
+app.set("trust proxy", 1);
+const PORT = parseInt(process.env.PORT || "5000", 10);
 if (!process.env.JWT_SECRET) {
   console.warn("[SECURITY] JWT_SECRET env var not set — using ephemeral random secret. All sessions will be invalidated on restart. Set JWT_SECRET in production.");
 }
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString("hex");
 
-// ── M2: TOTP-at-rest encryption — key derived from JWT_SECRET, never stored ──
-const TOTP_ENC_KEY = crypto.createHmac("sha256", JWT_SECRET).update("lvls-totp-enc-v1").digest();
+// ── M2: TOTP-at-rest encryption — dedicated secret, independent of JWT_SECRET ──
+if (!process.env.TOTP_ENC_SECRET) {
+  console.warn("[SECURITY] TOTP_ENC_SECRET not set — deriving from JWT_SECRET. Set a dedicated TOTP_ENC_SECRET in production.");
+}
+const TOTP_ENC_KEY = process.env.TOTP_ENC_SECRET
+  ? crypto.createHmac("sha256", process.env.TOTP_ENC_SECRET).update("lvls-totp-enc-v1").digest()
+  : crypto.createHmac("sha256", JWT_SECRET).update("lvls-totp-enc-v1").digest();
 function encryptTotp(secret: string): string {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", TOTP_ENC_KEY, iv);
@@ -41,6 +47,13 @@ app.use((_req, res, next) => {
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' chrome-extension: moz-extension:;");
+  next();
+});
+
+// ── Cache-Control: no-store on all API responses (L-05) ──────────────────────
+app.use("/api", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
   next();
 });
 
@@ -120,12 +133,48 @@ db.exec(`
   );
 `);
 
+// ── M3: TOTP replay prevention ────────────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS used_totps (
+    code TEXT NOT NULL,
+    level INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY (code, level)
+  );
+`);
+
 // ---------- Rate limits table (Fix 2) ----------
 db.exec(`
   CREATE TABLE IF NOT EXISTS rate_limits (
     ip TEXT PRIMARY KEY,
     count INTEGER DEFAULT 0,
     reset_at INTEGER NOT NULL
+  );
+`);
+
+// ---------- Integration tables ----------
+db.exec(`
+  CREATE TABLE IF NOT EXISTS app_tokens (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    allowed_levels TEXT NOT NULL DEFAULT '3',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_used_at DATETIME
+  );
+
+  CREATE TABLE IF NOT EXISTS credential_requests (
+    id TEXT PRIMARY KEY,
+    app_token_id TEXT NOT NULL,
+    app_name TEXT NOT NULL,
+    secret_name TEXT,
+    scope_level INTEGER,
+    scope_label TEXT,
+    reason TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',
+    secret_id TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME NOT NULL
   );
 `);
 
@@ -175,11 +224,12 @@ function rateLimitClear(ip: string) {
   db.prepare("DELETE FROM rate_limits WHERE ip = ?").run(ip);
 }
 
-// ── H6 + M1: Periodic cleanup of expired rate limits and revoked tokens ──────
+// ── H6 + M1 + M3: Periodic cleanup of expired rate limits, revoked tokens, used TOTPs ──
 setInterval(() => {
   const now = Date.now();
   db.prepare("DELETE FROM rate_limits WHERE reset_at < ?").run(now);
   db.prepare("DELETE FROM revoked_tokens WHERE revoked_at < ?").run(now - 7 * 24 * 60 * 60 * 1000);
+  db.prepare("DELETE FROM used_totps WHERE expires_at < ?").run(now);
 }, 60 * 60 * 1000); // every hour
 
 // ---------- TTL helper (Fix 1) ----------
@@ -335,7 +385,7 @@ app.post("/api/auth/setup", requireAuth(3), async (req, res) => {
     `).run(level, hash, kemPublicKey || null, method);
 
     db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
-      .run("system", level, "setup_credential", JSON.stringify({ level, method }));
+      .run((req as any).sessionId || "anon", level, "setup_credential", JSON.stringify({ level, method }));
 
     res.json({ success: true });
   } catch (err) {
@@ -355,14 +405,6 @@ app.post("/api/auth/unlock", authRateLimit, async (req, res) => {
     const row = db.prepare("SELECT credential_hash, totp_secret, totp_enabled, session_ttl, failed_attempts, locked_until FROM auth_config WHERE level = ?").get(level) as any;
 
     if (!row) {
-      if (process.env.NODE_ENV !== "production") {
-        const devPins: Record<number, string> = { 3: "1234", 2: "Pass2a1", 1: "Key1a1b", 0: "Master1a" };
-        if (credential === devPins[level]) {
-          const token = jwt.sign({ level, sessionId: crypto.randomUUID() }, JWT_SECRET, { expiresIn: "24h" });
-          return res.json({ success: true, token, devMode: true });
-        }
-        return res.status(401).json({ error: "Invalid credential (dev mode)" });
-      }
       return res.status(400).json({ error: "Vault not set up. Complete onboarding first." });
     }
 
@@ -380,7 +422,7 @@ app.post("/api/auth/unlock", authRateLimit, async (req, res) => {
       db.prepare("UPDATE auth_config SET failed_attempts = ?, locked_until = ? WHERE level = ?")
         .run(newAttempts, lockedUntil, level);
       db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
-        .run("system", level, "auth_failed", JSON.stringify({ level, attempt: newAttempts }));
+        .run((req as any).rateLimitIp || "unknown", level, "auth_failed", JSON.stringify({ level, attempt: newAttempts }));
       if (lockedUntil) return res.status(429).json({ error: `Too many failed attempts. lvl${level} locked for 15 min.` });
       return res.status(401).json({ error: "Invalid credential" });
     }
@@ -393,18 +435,27 @@ app.post("/api/auth/unlock", authRateLimit, async (req, res) => {
       if (!verifyTotp(decryptTotp(row.totp_secret), totp)) {
         rateLimitOnFailure((req as any).rateLimitIp);
         db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
-          .run("system", level, "auth_failed_totp", JSON.stringify({ level }));
+          .run((req as any).rateLimitIp || "unknown", level, "auth_failed_totp", JSON.stringify({ level }));
         return res.status(401).json({ error: "Invalid TOTP code" });
       }
+      // M3: Replay prevention — reject already-used TOTP codes within their validity window
+      const now = Date.now();
+      const alreadyUsed = db.prepare("SELECT 1 FROM used_totps WHERE code = ? AND level = ? AND expires_at > ?").get(totp, level, now);
+      if (alreadyUsed) {
+        rateLimitOnFailure((req as any).rateLimitIp);
+        return res.status(401).json({ error: "TOTP code already used" });
+      }
+      db.prepare("INSERT OR IGNORE INTO used_totps (code, level, expires_at) VALUES (?, ?, ?)").run(totp, level, now + 90_000);
     }
 
     // Fix 1 & 3: Use per-level TTL, reset lockout on success
     rateLimitClear((req as any).rateLimitIp);
     db.prepare("UPDATE auth_config SET failed_attempts = 0, locked_until = 0 WHERE level = ?").run(level);
     const ttl = parseTTL(row.session_ttl || "24h");
-    const token = jwt.sign({ level, sessionId: crypto.randomUUID() }, JWT_SECRET, { expiresIn: ttl as any });
+    const newSessionId = crypto.randomUUID();
+    const token = jwt.sign({ level, sessionId: newSessionId }, JWT_SECRET, { expiresIn: ttl as any });
     db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
-      .run("system", level, "auth_success", JSON.stringify({ level }));
+      .run(newSessionId, level, "auth_success", JSON.stringify({ level }));
 
     res.json({ success: true, token });
   } catch (err) {
@@ -433,7 +484,7 @@ app.put("/api/auth/kem-key/:level", requireAuth(3), (req, res) => {
     db.prepare("UPDATE auth_config SET kem_public_key = ?, updated_at = CURRENT_TIMESTAMP WHERE level = ?")
       .run(publicKey, level);
     db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
-      .run("system", level, "kem_key_updated", JSON.stringify({ level }));
+      .run((req as any).sessionId || "anon", level, "kem_key_updated", JSON.stringify({ level }));
     res.json({ success: true });
   } catch (err) {
     console.error(err);
@@ -442,7 +493,7 @@ app.put("/api/auth/kem-key/:level", requireAuth(3), (req, res) => {
 });
 
 // ---------- TOTP: Generate setup secret ----------
-app.post("/api/auth/totp/setup/:level", requireAuth(3), (req, res) => {
+app.post("/api/auth/totp/setup/:level", authRateLimit, requireAuth(3), (req, res) => {
   const level = validLevelParam(req.params.level);
   if (level === null) return res.status(400).json({ error: "Invalid level" });
   if ((req as any).authLevel > level) return res.status(403).json({ error: "Insufficient clearance" });
@@ -460,7 +511,7 @@ app.post("/api/auth/totp/setup/:level", requireAuth(3), (req, res) => {
 });
 
 // ---------- TOTP: Confirm and enable ----------
-app.post("/api/auth/totp/confirm/:level", requireAuth(3), (req, res) => {
+app.post("/api/auth/totp/confirm/:level", authRateLimit, requireAuth(3), (req, res) => {
   const level = validLevelParam(req.params.level);
   if (level === null) return res.status(400).json({ error: "Invalid level" });
   if ((req as any).authLevel > level) return res.status(403).json({ error: "Insufficient clearance" });
@@ -476,7 +527,7 @@ app.post("/api/auth/totp/confirm/:level", requireAuth(3), (req, res) => {
 
   db.prepare("UPDATE auth_config SET totp_enabled = 1, updated_at = CURRENT_TIMESTAMP WHERE level = ?").run(level);
   db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
-    .run("system", level, "totp_enabled", JSON.stringify({ level }));
+    .run((req as any).sessionId || "anon", level, "totp_enabled", JSON.stringify({ level }));
 
   res.json({ success: true });
 });
@@ -489,7 +540,7 @@ app.post("/api/auth/totp/disable/:level", requireAuth(3), (req, res) => {
 
   db.prepare("UPDATE auth_config SET totp_secret = NULL, totp_enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE level = ?").run(level);
   db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
-    .run("system", level, "totp_disabled", JSON.stringify({ level }));
+    .run((req as any).sessionId || "anon", level, "totp_disabled", JSON.stringify({ level }));
 
   res.json({ success: true });
 });
@@ -535,7 +586,7 @@ app.post("/api/secrets", requireAuth(3), async (req, res) => {
     ).run(id, name, level, secret_type || "custom", encrypted_value, JSON.stringify(tags), expiry, url || null, username || null, folder || null);
 
     db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
-      .run("system", level, "create_secret", JSON.stringify({ id }));
+      .run((req as any).sessionId || "anon", level, "create_secret", JSON.stringify({ id }));
 
     res.json({ success: true });
   } catch (err) {
@@ -558,7 +609,7 @@ app.put("/api/secrets/:id", requireAuth(3), async (req, res) => {
     ).run(name, secret_type, JSON.stringify(tags), url || null, username || null, folder || null, id);
 
     db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
-      .run("system", secret.level, "update_secret", JSON.stringify({ name, id }));
+      .run((req as any).sessionId || "anon", secret.level, "update_secret", JSON.stringify({ name, id }));
 
     res.json({ success: true });
   } catch (err) {
@@ -586,6 +637,9 @@ app.get("/api/secrets/by-domain", requireAuth(3), (req, res) => {
   try {
     const hostname = req.query.hostname as string;
     if (!hostname) return res.status(400).json({ error: "hostname required" });
+    if (hostname.length > 253 || !/^[a-zA-Z0-9.\-]+$/.test(hostname)) {
+      return res.status(400).json({ error: "Invalid hostname" });
+    }
     const authLevel = (req as any).authLevel;
     // Match secrets where url contains the hostname
     const secrets = db.prepare(
@@ -621,7 +675,7 @@ app.delete("/api/secrets/:id", requireAuth(3), (req, res) => {
     if ((req as any).authLevel > secret.level) return res.status(403).json({ error: "Insufficient clearance" });
     db.prepare("DELETE FROM secrets WHERE id = ?").run(req.params.id);
     db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
-      .run("system", (req as any).authLevel, "delete_secret", JSON.stringify({ id: req.params.id }));
+      .run((req as any).sessionId || "anon", (req as any).authLevel, "delete_secret", JSON.stringify({ id: req.params.id }));
     res.json({ success: true });
   } catch (err) {
     console.error(err);
@@ -694,17 +748,17 @@ async function startServer() {
 
   const tls = loadTlsOptions();
 
+  const HOST = process.env.HOST || "127.0.0.1";
+
   if (tls) {
     isHttps = true;
-    https.createServer(tls, app).listen(PORT, "127.0.0.1", () => {
-      console.log(`\x1b[32m[TLS]\x1b[0m lvls running on \x1b[1mhttps://127.0.0.1:${PORT}\x1b[0m`);
+    https.createServer(tls, app).listen(PORT, HOST, () => {
+      console.log(`\x1b[32m[TLS]\x1b[0m lvls running on \x1b[1mhttps://${HOST}:${PORT}\x1b[0m`);
     });
   } else {
     console.warn("\x1b[33m[SECURITY]\x1b[0m No TLS certificates found — running HTTP.");
-    console.warn("\x1b[33m[SECURITY]\x1b[0m To enable HTTPS (recommended), run:");
-    console.warn("  npm install -g mkcert && mkcert -install && mkcert -cert-file cert.pem -key-file key.pem 127.0.0.1 localhost");
-    http.createServer(app).listen(PORT, "127.0.0.1", () => {
-      console.log(`lvls running on http://127.0.0.1:${PORT} (no TLS — localhost only)`);
+    http.createServer(app).listen(PORT, HOST, () => {
+      console.log(`lvls running on http://${HOST}:${PORT} (no TLS — localhost only)`);
     });
   }
 }

@@ -3,10 +3,10 @@
 // Auto-detect server protocol (HTTPS preferred)
 async function detectBaseUrl() {
   try {
-    const r = await fetch("https://127.0.0.1:3000/api/health", { signal: AbortSignal.timeout(1200) });
-    if (r.ok) return "https://127.0.0.1:3000";
+    const r = await fetch("https://127.0.0.1:5000/api/health", { signal: AbortSignal.timeout(1200) });
+    if (r.ok) return "https://127.0.0.1:5000";
   } catch {}
-  return "http://127.0.0.1:3000";
+  return "http://127.0.0.1:5000";
 }
 
 let selectedLevel = 3;

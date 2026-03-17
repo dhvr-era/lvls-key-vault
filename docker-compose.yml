@@ -1,0 +1,15 @@
+services:
+  lvls:
+    build: .
+    container_name: lvls
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5000:5000"     # localhost only — never public
+    env_file:
+      - .env
+    volumes:
+      - ./lvls.db:/app/lvls.db             # persistent database
+      - ./lvls.db-shm:/app/lvls.db-shm
+      - ./lvls.db-wal:/app/lvls.db-wal
+      - ./cert.pem:/app/cert.pem:ro        # TLS cert (read-only)
+      - ./key.pem:/app/key.pem:ro          # TLS key (read-only)
