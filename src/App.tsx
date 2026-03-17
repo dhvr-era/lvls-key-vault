@@ -408,6 +408,51 @@ function CredentialSetup({ authLevel, sessionToken }: { authLevel: number; sessi
   );
 }
 
+// ---------- Folder Input with level-scoped dropdown ----------
+function FolderInput({ value, onChange, folders }: {
+  value: string;
+  onChange: (v: string) => void;
+  folders: string[];
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const filtered = folders.filter(f => f.toLowerCase().includes(value.toLowerCase()));
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  return (
+    <div className="relative" ref={ref}>
+      <input
+        type="text"
+        value={value}
+        onChange={e => { onChange(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-600 placeholder:text-zinc-600"
+        placeholder="e.g. AWS, GitHub, Vanta"
+        autoComplete="off"
+      />
+      {open && filtered.length > 0 && (
+        <div className="absolute z-50 top-full mt-1 w-full bg-zinc-900 border border-zinc-800 rounded-lg shadow-xl overflow-hidden">
+          {filtered.map(f => (
+            <button
+              key={f}
+              type="button"
+              onMouseDown={e => { e.preventDefault(); onChange(f); setOpen(false); }}
+              className="w-full text-left px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors flex items-center gap-2"
+            >
+              <span className="text-zinc-500 text-xs">📁</span> {f}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------- Live TOTP Code Display ----------
 function TotpCodeDisplay({ seed }: { seed: string }) {
   const [code, setCode] = useState("------");
@@ -520,6 +565,7 @@ export default function App() {
   const [logsLevelFilter, setLogsLevelFilter] = useState<number[]>([]);
   const [showLevelCol, setShowLevelCol] = useState(false);
   const [lvlDropdownOpen, setLvlDropdownOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   // KEM private keys held in memory after unlock — never stored unencrypted
   const [kemPrivateKeys, setKemPrivateKeys] = useState<Record<number, string>>({});
@@ -535,6 +581,7 @@ export default function App() {
       fetchLogs();
       setVaultLevelFilter([authLevel]);
       setShowLevelCol(false);
+      setSearchQuery("");
     }
   }, [authLevel, sessionToken]);
 
@@ -980,6 +1027,8 @@ export default function App() {
               <input
                 type="text"
                 placeholder="Search secrets…"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
                 className="bg-zinc-950 border border-zinc-800/80 rounded-lg pl-8 pr-3 py-1.5 text-xs text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 focus:bg-zinc-900 transition-all w-48 focus:w-64"
               />
             </div>
@@ -1161,19 +1210,15 @@ export default function App() {
                         <label className="block text-xs font-medium text-zinc-500 mb-1 uppercase tracking-wider">
                           Folder
                         </label>
-                        <input
-                          type="text"
-                          list="folder-suggestions"
+                        <FolderInput
                           value={newSecret.folder}
-                          onChange={(e) => setNewSecret({ ...newSecret, folder: e.target.value })}
-                          className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-600"
-                          placeholder="e.g. AWS, GitHub, Vanta"
+                          onChange={v => setNewSecret({ ...newSecret, folder: v })}
+                          folders={[...new Set<string>(
+                            secrets
+                              .filter(s => s.level === newSecret.level && s.folder)
+                              .map(s => s.folder!)
+                          )]}
                         />
-                        <datalist id="folder-suggestions">
-                          {[...new Set(secrets.map(s => s.folder).filter(Boolean))].map(f => (
-                            <option key={f} value={f!} />
-                          ))}
-                        </datalist>
                       </div>
                       <div>
                         <label className="block text-xs font-medium text-zinc-500 mb-1 uppercase tracking-wider">
@@ -1249,7 +1294,14 @@ export default function App() {
                   </thead>
                   <tbody>
                     {(() => {
-                      const filtered = secrets.filter((s) => authLevel < 4 && s.level >= authLevel && (vaultLevelFilter.length === 0 || vaultLevelFilter.includes(s.level)));
+                      const q = searchQuery.toLowerCase().trim();
+                      const filtered = secrets.filter((s) =>
+                        authLevel < 4 &&
+                        s.level >= authLevel &&
+                        s.level <= authLevel &&
+                        (vaultLevelFilter.length === 0 || vaultLevelFilter.includes(s.level)) &&
+                        (!q || s.name.toLowerCase().includes(q) || (s.folder || "").toLowerCase().includes(q) || (s.username || "").toLowerCase().includes(q) || s.tags.some(t => t.toLowerCase().includes(q)))
+                      );
                       const folderMap = new Map<string, Secret[]>();
                       filtered.forEach(s => {
                         const key = s.folder?.trim() || "__none__";
@@ -1346,11 +1398,14 @@ export default function App() {
                                     placeholder="tags, comma separated"
                                     onChange={e => setEditForm(prev => ({...prev, tags: e.target.value}))}
                                   />
-                                  <input
-                                    className="w-full bg-zinc-950 border border-zinc-800 px-2 py-1 rounded text-white text-sm focus:outline-none focus:border-violet-600"
+                                  <FolderInput
                                     value={editForm.folder}
-                                    placeholder="folder (e.g. AWS)"
-                                    onChange={e => setEditForm(prev => ({...prev, folder: e.target.value}))}
+                                    onChange={v => setEditForm(prev => ({...prev, folder: v}))}
+                                    folders={[...new Set<string>(
+                                      secrets
+                                        .filter(s => s.level === secret.level && s.folder)
+                                        .map(s => s.folder!)
+                                    )]}
                                   />
                                 </div>
                               </td>
