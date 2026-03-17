@@ -23,7 +23,20 @@
 *::-webkit-scrollbar-thumb:hover { background: #52525b; }
 
 /* Smooth transitions globally */
-* { transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); }
+* {
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Buttons and interactive elements get a default smooth transition */
+button, a, input, select, textarea {
+  transition-duration: 150ms;
+}
+
+/* GPU-composite the modal overlay for silky rendering */
+[data-modal] {
+  will-change: opacity, transform;
+  backface-visibility: hidden;
+}
 
 /* Selection */
 ::selection { background: #b39ddb33; color: #e4daf5; }
