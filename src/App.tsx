@@ -186,17 +186,43 @@ function AuthModal({ authLevel, targetLevel, totpStatus, authInput, setAuthInput
     : "bg-red-700 hover:bg-red-600";
 
   return (
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-zinc-950/90 backdrop-blur-xl border border-zinc-800/60 p-8 rounded-2xl w-full max-w-md shadow-2xl relative">
+    <motion.div
+      className="fixed inset-0 flex items-center justify-center z-50 p-4"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.2 }}
+    >
+      {/* Backdrop */}
+      <motion.div
+        className="absolute inset-0 bg-black/80 backdrop-blur-md"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        onClick={onClose}
+      />
+      {/* Card */}
+      <motion.div
+        className="bg-zinc-950/90 backdrop-blur-xl border border-zinc-800/60 p-8 rounded-2xl w-full max-w-md shadow-2xl relative"
+        initial={{ opacity: 0, scale: 0.94, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.94, y: 16 }}
+        transition={{ type: "spring", stiffness: 380, damping: 30, mass: 0.8 }}
+      >
         <button
-            onClick={onClose}
-            className="absolute top-4 right-4 p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors"
-            title="Close"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          onClick={onClose}
+          className="absolute top-4 right-4 p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors"
+          title="Close"
+        >
+          <X className="w-4 h-4" />
+        </button>
         <div className="flex justify-center mb-6">
-          <div className={`p-4 rounded-full ${levelColor}`}>{levelIcon}</div>
+          <motion.div
+            className={`p-4 rounded-full ${levelColor}`}
+            initial={{ scale: 0.7, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ delay: 0.1, type: "spring", stiffness: 400, damping: 25 }}
+          >{levelIcon}</motion.div>
         </div>
         <h2 className="text-2xl font-bold text-white text-center mb-2 tracking-tight">Unlock</h2>
         <p className="text-zinc-400 text-center mb-8 text-sm">{levelDesc}</p>
@@ -246,8 +272,8 @@ function AuthModal({ authLevel, targetLevel, totpStatus, authInput, setAuthInput
             {authLoading ? "Verifying…" : "Authenticate"}
           </button>
         </form>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -983,7 +1009,8 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-black text-zinc-300 font-sans flex">
-      {showAuthModal && (
+      <AnimatePresence>
+        {showAuthModal && (
         <AuthModal
           authLevel={authLevel}
           targetLevel={pendingAuthLevel}
@@ -998,7 +1025,8 @@ export default function App() {
           handleAuth={handleAuth}
           onClose={() => { setShowAuthModal(false); setAuthInput(""); setAuthError(""); setTotpInput(""); }}
         />
-      )}
+        )}
+      </AnimatePresence>
 
       {/* Sidebar */}
       <div className="w-64 bg-black flex flex-col z-10">
