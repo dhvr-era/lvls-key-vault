@@ -117,7 +117,7 @@ const LevelSelector = ({ currentLevel, onChange }: { currentLevel: number, onCha
           {['s', 3, 2, 1, 0].map((n, i) => (
             <div
               key={i}
-              className="h-10 flex items-center justify-start text-violet-400 hover:text-violet-300 transition-colors cursor-pointer"
+              className="h-10 flex items-center justify-start text-transparent cursor-pointer"
               onClick={() => move(i - displayRef.current)}
             >
               {n}
@@ -1321,7 +1321,6 @@ export default function App() {
                       const filtered = secrets.filter((s) =>
                         authLevel < 4 &&
                         s.level >= authLevel &&
-                        s.level <= authLevel &&
                         (vaultLevelFilter.length === 0 || vaultLevelFilter.includes(s.level)) &&
                         (!q || s.name.toLowerCase().includes(q) || (s.folder || "").toLowerCase().includes(q) || (s.username || "").toLowerCase().includes(q) || s.tags.some(t => t.toLowerCase().includes(q)))
                       );
