@@ -117,7 +117,7 @@ const LevelSelector = ({ currentLevel, onChange }: { currentLevel: number, onCha
           {['s', 3, 2, 1, 0].map((n, i) => (
             <div
               key={i}
-              className="h-10 flex items-center justify-start text-transparent cursor-pointer"
+              className={`h-10 flex items-center justify-start cursor-pointer ${n === 's' ? 'text-zinc-600 text-lg' : 'text-transparent'}`}
               onClick={() => move(i - displayRef.current)}
             >
               {n}
@@ -173,15 +173,13 @@ function AuthModal({ authLevel, targetLevel, totpStatus, authInput, setAuthInput
   return (
     <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-zinc-950/90 backdrop-blur-xl border border-zinc-800/60 p-8 rounded-2xl w-full max-w-md shadow-2xl relative">
-        {authLevel <= 3 && (
-          <button
+        <button
             onClick={onClose}
             className="absolute top-4 right-4 p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors"
             title="Close"
           >
             <X className="w-4 h-4" />
           </button>
-        )}
         <div className="flex justify-center mb-6">
           <div className={`p-4 rounded-full ${levelColor}`}>{levelIcon}</div>
         </div>
@@ -1699,7 +1697,7 @@ export default function App() {
                 </div>
                 <button
                   onClick={() => setShowSettings(false)}
-                  className="p-2 text-zinc-500 hover:text-white hover:bg-zinc-800 rounded-xl transition-colors"
+                  className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors"
                 >
                   <X className="w-4 h-4" />
                 </button>
