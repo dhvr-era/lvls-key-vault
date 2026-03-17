@@ -486,7 +486,9 @@ export default function App() {
     tags: "",
     url: "",
     username: "",
+    folder: "",
   });
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
   
   // Progressive Auth State
   const [authLevel, setAuthLevel] = useState<number>(4);
@@ -503,7 +505,7 @@ export default function App() {
   const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [sessionCredentials, setSessionCredentials] = useState<Record<number, string>>({});
   const [editingSecret, setEditingSecret] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState({ name: "", type: "password", tags: "", url: "", username: "" });
+  const [editForm, setEditForm] = useState({ name: "", type: "password", tags: "", url: "", username: "", folder: "" });
 
   // TOTP setup state
   const [totpSetup, setTotpSetup] = useState<{ level: number; secret: string; uri: string } | null>(null);
@@ -773,12 +775,13 @@ export default function App() {
           expiry: null,
           url: newSecret.url || null,
           username: newSecret.username || null,
+          folder: newSecret.folder.trim() || null,
         }),
       });
 
       if (res.ok) {
         setIsAdding(false);
-        setNewSecret({ name: "", level: 3, type: "password", value: "", tags: "", url: "", username: "" });
+        setNewSecret({ name: "", level: 3, type: "password", value: "", tags: "", url: "", username: "", folder: "" });
         fetchSecrets();
       }
     } catch (error) {
@@ -810,6 +813,7 @@ export default function App() {
           name: editForm.name,
           secret_type: editForm.type,
           tags: editForm.tags.split(",").map(t => t.trim()).filter(Boolean),
+          folder: editForm.folder.trim() || null,
         }),
       });
       if (res.ok) {
@@ -1152,19 +1156,37 @@ export default function App() {
                         )}
                       </div>
                     </div>
-                    <div>
-                      <label className="block text-xs font-medium text-zinc-500 mb-1 uppercase tracking-wider">
-                        Tags (comma separated)
-                      </label>
-                      <input
-                        type="text"
-                        value={newSecret.tags}
-                        onChange={(e) =>
-                          setNewSecret({ ...newSecret, tags: e.target.value })
-                        }
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-600"
-                        placeholder="e.g. ai, finance, health, crypto, infra"
-                      />
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs font-medium text-zinc-500 mb-1 uppercase tracking-wider">
+                          Folder
+                        </label>
+                        <input
+                          type="text"
+                          list="folder-suggestions"
+                          value={newSecret.folder}
+                          onChange={(e) => setNewSecret({ ...newSecret, folder: e.target.value })}
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-600"
+                          placeholder="e.g. AWS, GitHub, Vanta"
+                        />
+                        <datalist id="folder-suggestions">
+                          {[...new Set(secrets.map(s => s.folder).filter(Boolean))].map(f => (
+                            <option key={f} value={f!} />
+                          ))}
+                        </datalist>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-zinc-500 mb-1 uppercase tracking-wider">
+                          Tags (comma separated)
+                        </label>
+                        <input
+                          type="text"
+                          value={newSecret.tags}
+                          onChange={(e) => setNewSecret({ ...newSecret, tags: e.target.value })}
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-600"
+                          placeholder="e.g. ai, finance, infra"
+                        />
+                      </div>
                     </div>
                     <div className="flex justify-end gap-3 pt-2">
                       <button
@@ -1226,9 +1248,43 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-900">
-                    {secrets
-                      .filter((s) => authLevel < 4 && s.level >= authLevel && (vaultLevelFilter.length === 0 || vaultLevelFilter.includes(s.level)))
-                      .map((secret) => {
+                    {(() => {
+                      const filtered = secrets.filter((s) => authLevel < 4 && s.level >= authLevel && (vaultLevelFilter.length === 0 || vaultLevelFilter.includes(s.level)));
+                      const folderMap = new Map<string, Secret[]>();
+                      filtered.forEach(s => {
+                        const key = s.folder?.trim() || "__none__";
+                        if (!folderMap.has(key)) folderMap.set(key, []);
+                        folderMap.get(key)!.push(s);
+                      });
+                      const folderKeys = [...folderMap.keys()].sort((a, b) =>
+                        a === "__none__" ? 1 : b === "__none__" ? -1 : a.localeCompare(b)
+                      );
+                      const colSpan = showLevelCol ? 7 : 6;
+                      return folderKeys.map(folderKey => {
+                        const folderSecrets = folderMap.get(folderKey)!;
+                        const label = folderKey === "__none__" ? null : folderKey;
+                        const isCollapsed = collapsedFolders.has(folderKey);
+                        return (
+                          <React.Fragment key={folderKey}>
+                            {label !== null && (
+                              <tr className="bg-zinc-950/80 select-none">
+                                <td colSpan={colSpan} className="px-5 py-2">
+                                  <button
+                                    className="flex items-center gap-2 text-xs font-semibold text-zinc-400 hover:text-zinc-200 transition-colors w-full text-left"
+                                    onClick={() => setCollapsedFolders(prev => {
+                                      const next = new Set(prev);
+                                      next.has(folderKey) ? next.delete(folderKey) : next.add(folderKey);
+                                      return next;
+                                    })}
+                                  >
+                                    <span className={`text-[8px] transition-transform duration-150 inline-block ${isCollapsed ? "" : "rotate-90"}`}>▶</span>
+                                    <span>📁 {folderKey}</span>
+                                    <span className="text-zinc-600 font-normal">{folderSecrets.length}</span>
+                                  </button>
+                                </td>
+                              </tr>
+                            )}
+                            {!isCollapsed && folderSecrets.map((secret) => {
                         const info = getLevelInfo(secret.level);
                         const isRevealed = revealedSecrets.has(secret.id);
                         const displayValue = isRevealed
@@ -1270,12 +1326,20 @@ export default function App() {
                                 <span className="font-mono text-zinc-500 text-xs">•••••••• (unchanged)</span>
                               </td>
                               <td className="px-6 py-4">
-                                <input
-                                  className="w-full bg-zinc-950 border border-zinc-800 px-2 py-1 rounded text-white text-sm focus:outline-none focus:border-violet-600" 
-                                  value={editForm.tags} 
-                                  placeholder="tags, comma separated"
-                                  onChange={e => setEditForm(prev => ({...prev, tags: e.target.value}))} 
-                                />
+                                <div className="flex flex-col gap-1.5">
+                                  <input
+                                    className="w-full bg-zinc-950 border border-zinc-800 px-2 py-1 rounded text-white text-sm focus:outline-none focus:border-violet-600"
+                                    value={editForm.tags}
+                                    placeholder="tags, comma separated"
+                                    onChange={e => setEditForm(prev => ({...prev, tags: e.target.value}))}
+                                  />
+                                  <input
+                                    className="w-full bg-zinc-950 border border-zinc-800 px-2 py-1 rounded text-white text-sm focus:outline-none focus:border-violet-600"
+                                    value={editForm.folder}
+                                    placeholder="folder (e.g. AWS)"
+                                    onChange={e => setEditForm(prev => ({...prev, folder: e.target.value}))}
+                                  />
+                                </div>
                               </td>
                               <td className="px-6 py-4 text-right">
                                 <div className="flex justify-end gap-2">
@@ -1340,7 +1404,7 @@ export default function App() {
                                 <button
                                   onClick={() => {
                                     setEditingSecret(secret.id);
-                                    setEditForm({ name: secret.name, type: secret.secret_type || 'custom', tags: secret.tags.join(', ') });
+                                    setEditForm({ name: secret.name, type: secret.secret_type || 'custom', tags: secret.tags.join(', '), url: secret.url || '', username: secret.username || '', folder: secret.folder || '' });
                                   }}
                                   className="text-zinc-500 hover:text-blue-400 opacity-0 group-hover:opacity-100 transition-all p-1"
                                   title="Edit Secret"
@@ -1359,6 +1423,10 @@ export default function App() {
                           </tr>
                         );
                       })}
+                          </React.Fragment>
+                        );
+                      });
+                    })()}
                     {secrets.filter((s) => authLevel < 4 && s.level >= authLevel && (vaultLevelFilter.length === 0 || vaultLevelFilter.includes(s.level))).length === 0 && !isAdding && authLevel < 4 && (
                       <tr>
                         <td

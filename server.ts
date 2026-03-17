@@ -144,6 +144,8 @@ const migrations = [
   // Fix 4: Drop dead columns (SQLite 3.35+)
   "ALTER TABLE secrets DROP COLUMN iv",
   "ALTER TABLE secrets DROP COLUMN salt",
+  // Folders
+  "ALTER TABLE secrets ADD COLUMN folder TEXT DEFAULT NULL",
 ];
 for (const m of migrations) {
   try { db.exec(m); } catch { /* column already exists or not supported */ }
@@ -519,7 +521,7 @@ app.post("/api/auth/logout", requireAuth(3), (req, res) => {
 
 // ---------- Secrets: Create ----------
 app.post("/api/secrets", requireAuth(3), async (req, res) => {
-  const { name, level, secret_type, encrypted_value, tags, expiry, url, username } = req.body;
+  const { name, level, secret_type, encrypted_value, tags, expiry, url, username, folder } = req.body;
   const authLevel = (req as any).authLevel;
   // C4: Prevent privilege escalation — can only create secrets at your own level or less secure
   if (level === undefined || level < authLevel) return res.status(403).json({ error: "Cannot create secrets above your clearance level" });
@@ -529,8 +531,8 @@ app.post("/api/secrets", requireAuth(3), async (req, res) => {
   const id = crypto.randomUUID();
   try {
     db.prepare(
-      "INSERT INTO secrets (id, name, level, secret_type, encrypted_value, tags, expiry, url, username) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(id, name, level, secret_type || "custom", encrypted_value, JSON.stringify(tags), expiry, url || null, username || null);
+      "INSERT INTO secrets (id, name, level, secret_type, encrypted_value, tags, expiry, url, username, folder) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(id, name, level, secret_type || "custom", encrypted_value, JSON.stringify(tags), expiry, url || null, username || null, folder || null);
 
     db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
       .run("system", level, "create_secret", JSON.stringify({ id }));
@@ -545,15 +547,15 @@ app.post("/api/secrets", requireAuth(3), async (req, res) => {
 // ---------- Secrets: Update ----------
 app.put("/api/secrets/:id", requireAuth(3), async (req, res) => {
   const { id } = req.params;
-  const { name, secret_type, tags, url, username } = req.body;
+  const { name, secret_type, tags, url, username, folder } = req.body;
   try {
     const secret = db.prepare("SELECT level FROM secrets WHERE id = ?").get(id) as any;
     if (!secret) return res.status(404).json({ error: "Secret not found" });
     if ((req as any).authLevel > secret.level) return res.status(403).json({ error: "Insufficient clearance" });
 
     db.prepare(
-      "UPDATE secrets SET name = ?, secret_type = ?, tags = ?, url = ?, username = ? WHERE id = ?"
-    ).run(name, secret_type, JSON.stringify(tags), url || null, username || null, id);
+      "UPDATE secrets SET name = ?, secret_type = ?, tags = ?, url = ?, username = ?, folder = ? WHERE id = ?"
+    ).run(name, secret_type, JSON.stringify(tags), url || null, username || null, folder || null, id);
 
     db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
       .run("system", secret.level, "update_secret", JSON.stringify({ name, id }));
@@ -570,7 +572,7 @@ app.get("/api/secrets", requireAuth(3), (req, res) => {
   try {
     const authLevel = (req as any).authLevel;
     const secrets = db.prepare(
-      "SELECT id, name, level, secret_type, encrypted_value, tags, expiry, url, username, created_at FROM secrets WHERE level >= ? ORDER BY created_at DESC"
+      "SELECT id, name, level, secret_type, encrypted_value, tags, expiry, url, username, folder, created_at FROM secrets WHERE level >= ? ORDER BY folder ASC, created_at DESC"
     ).all(authLevel).map((s: any) => ({ ...s, tags: s.tags ? JSON.parse(s.tags) : [] }));
     res.json(secrets);
   } catch (err) {
@@ -587,7 +589,7 @@ app.get("/api/secrets/by-domain", requireAuth(3), (req, res) => {
     const authLevel = (req as any).authLevel;
     // Match secrets where url contains the hostname
     const secrets = db.prepare(
-      "SELECT id, name, level, secret_type, encrypted_value, tags, url, username, created_at FROM secrets WHERE level >= ? AND (url LIKE ? OR name LIKE ?) ORDER BY created_at DESC"
+      "SELECT id, name, level, secret_type, encrypted_value, tags, url, username, folder, created_at FROM secrets WHERE level >= ? AND (url LIKE ? OR name LIKE ?) ORDER BY created_at DESC"
     ).all(authLevel, `%${hostname}%`, `%${hostname}%`)
       .map((s: any) => ({ ...s, tags: s.tags ? JSON.parse(s.tags) : [] }));
     res.json(secrets);

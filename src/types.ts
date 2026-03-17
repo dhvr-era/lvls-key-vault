@@ -8,6 +8,7 @@ export interface Secret {
   expiry: string | null;
   url: string | null;
   username: string | null;
+  folder: string | null;
   created_at: string;
 }
 
