@@ -42,62 +42,83 @@ import type { Secret, SessionLog } from "./types";
 import { encryptForLevel, decryptForLevel, generateKemKeyPair, encryptAES, decryptAES } from "./lib/crypto";
 
 const LevelSelector = ({ currentLevel, onChange }: { currentLevel: number, onChange: (l: number) => void }) => {
-  const [visualLevel, setVisualLevel] = React.useState(0);
-  const timerRef = React.useRef<NodeJS.Timeout | null>(null);
+  const [display, setDisplay] = React.useState(currentLevel);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  // All mutable scroll state in refs so the non-passive listener never sees stale values
+  const displayRef = React.useRef(currentLevel);
+  const onChangeRef = React.useRef(onChange);
   const deltaAccRef = React.useRef(0);
-  const deltaResetRef = React.useRef<NodeJS.Timeout | null>(null);
-  const SCROLL_THRESHOLD = 80;
+  const cooldownRef = React.useRef(false);
+  const PIXEL_THRESHOLD = 60;   // px to count as one level change (trackpad)
+  const COOLDOWN_MS = 180;       // min ms between level changes
 
-  const triggerChange = (newLevel: number) => {
-    setVisualLevel(newLevel);
-    onChange(newLevel);
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => { setVisualLevel(0); }, 300);
-  };
+  // Keep refs in sync
+  React.useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
+  React.useEffect(() => {
+    displayRef.current = currentLevel;
+    setDisplay(currentLevel);
+  }, [currentLevel]);
 
-  const handleWheel = (e: React.WheelEvent) => {
-    // Reset accumulator after 200ms of no scroll activity
-    if (deltaResetRef.current) clearTimeout(deltaResetRef.current);
-    deltaResetRef.current = setTimeout(() => { deltaAccRef.current = 0; }, 200);
+  const move = React.useCallback((delta: number) => {
+    if (cooldownRef.current) return;
+    const next = Math.max(0, Math.min(4, displayRef.current + delta));
+    if (next === displayRef.current) return;
+    displayRef.current = next;
+    setDisplay(next);
+    onChangeRef.current(next);
+    cooldownRef.current = true;
+    setTimeout(() => { cooldownRef.current = false; }, COOLDOWN_MS);
+  }, []);
 
-    deltaAccRef.current += e.deltaY;
-
-    const baseLevel = visualLevel === 0 ? currentLevel : visualLevel;
-
-    if (deltaAccRef.current >= SCROLL_THRESHOLD) {
-      deltaAccRef.current = 0;
-      if (baseLevel < 4) triggerChange(baseLevel + 1);
-    } else if (deltaAccRef.current <= -SCROLL_THRESHOLD) {
-      deltaAccRef.current = 0;
-      if (baseLevel > 0) triggerChange(baseLevel - 1);
-    }
-  };
+  // Non-passive wheel listener so we can preventDefault and guarantee timing
+  React.useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      if (e.deltaMode === 1) {
+        // Line mode — mechanical mouse: each detent = exactly one level
+        if (e.deltaY > 0) move(1);
+        else if (e.deltaY < 0) move(-1);
+      } else {
+        // Pixel mode — trackpad: accumulate until threshold
+        deltaAccRef.current += e.deltaY;
+        if (deltaAccRef.current >= PIXEL_THRESHOLD) {
+          deltaAccRef.current -= PIXEL_THRESHOLD; // preserve remainder for chaining
+          move(1);
+        } else if (deltaAccRef.current <= -PIXEL_THRESHOLD) {
+          deltaAccRef.current += PIXEL_THRESHOLD;
+          move(-1);
+        }
+      }
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [move]);
 
   return (
     <div className="flex items-center text-4xl font-bold text-white tracking-tighter select-none">
       <div className="text-violet-400">lvl</div>
-      <div 
+      <div
+        ref={containerRef}
         className="relative h-10 w-8 overflow-hidden cursor-ns-resize"
-        onWheel={handleWheel}
       >
         <motion.div
-          animate={{ y: -visualLevel * 40 }}
-          transition={{ type: "spring", stiffness: 300, damping: 30 }}
+          animate={{ y: -display * 40 }}
+          transition={{ type: "spring", stiffness: 400, damping: 35, mass: 0.6 }}
           className="absolute inset-x-0 top-0"
           drag="y"
           dragConstraints={{ top: 0, bottom: 0 }}
-          onDragEnd={(e, info) => {
-            const y = info.offset.y;
-            const baseLevel = visualLevel === 0 ? currentLevel : visualLevel;
-            if (y < -10 && baseLevel < 4) triggerChange(baseLevel + 1);
-            if (y > 10 && baseLevel > 0) triggerChange(baseLevel - 1);
+          onDragEnd={(_e, info) => {
+            if (info.offset.y < -12) move(1);
+            else if (info.offset.y > 12) move(-1);
           }}
         >
           {['s', 3, 2, 1, 0].map((n, i) => (
-            <div 
-              key={i} 
-              className="h-10 flex items-center justify-start text-violet-400 hover:text-violet-300 transition-colors" 
-              onClick={() => triggerChange(i)}
+            <div
+              key={i}
+              className="h-10 flex items-center justify-start text-violet-400 hover:text-violet-300 transition-colors cursor-pointer"
+              onClick={() => move(i - displayRef.current)}
             >
               {n}
             </div>
