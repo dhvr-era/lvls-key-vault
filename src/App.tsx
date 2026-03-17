@@ -1025,8 +1025,10 @@ export default function App() {
           <LevelSelector
             currentLevel={viewLevel}
             onChange={(l) => {
+              // l=0 means standby (s) — keep current view, do nothing
+              if (l === 0) return;
               setViewLevel(l);
-              const neededAuthLevel = l === 0 ? 4 : 4 - l;
+              const neededAuthLevel = 4 - l;
               if (authLevel > neededAuthLevel) {
                 // Need higher clearance — ask for credential
                 setPendingAuthLevel(neededAuthLevel);
