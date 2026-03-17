@@ -657,8 +657,14 @@ export default function App() {
         headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
       });
       if (res.ok) {
-        const data = await res.json();
+        const data: Secret[] = await res.json();
         setSecrets(data);
+        // Auto-collapse all folders by default
+        setCollapsedFolders(prev => {
+          const next = new Set(prev);
+          data.forEach(s => { if (s.folder) next.add(s.folder); });
+          return next;
+        });
       }
     } catch (error) {
       console.error("Failed to fetch secrets", error);
