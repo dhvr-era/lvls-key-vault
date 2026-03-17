@@ -41,23 +41,22 @@ import { motion, AnimatePresence } from "motion/react";
 import type { Secret, SessionLog } from "./types";
 import { encryptForLevel, decryptForLevel, generateKemKeyPair, encryptAES, decryptAES } from "./lib/crypto";
 
-const LevelSelector = ({ currentLevel, onChange }: { currentLevel: number, onChange: (l: number) => void }) => {
-  const [display, setDisplay] = React.useState(currentLevel);
+const SETTLE_MS = 2000; // ms after last scroll before auth/content fires
+
+const LevelSelector = ({ onChange }: { currentLevel: number, onChange: (l: number) => void }) => {
+  // display: what the selector shows (0 = s, 1-4 = level positions)
+  // Always starts at 0 (s); shows the scrolled-to number while settling
+  const [display, setDisplay] = React.useState(0);
   const containerRef = React.useRef<HTMLDivElement>(null);
-  // All mutable scroll state in refs so the non-passive listener never sees stale values
-  const displayRef = React.useRef(currentLevel);
+  const displayRef = React.useRef(0);
   const onChangeRef = React.useRef(onChange);
   const deltaAccRef = React.useRef(0);
   const cooldownRef = React.useRef(false);
-  const PIXEL_THRESHOLD = 60;   // px to count as one level change (trackpad)
-  const COOLDOWN_MS = 180;       // min ms between level changes
+  const settleTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const PIXEL_THRESHOLD = 60;
+  const COOLDOWN_MS = 180;
 
-  // Keep refs in sync
   React.useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
-  React.useEffect(() => {
-    displayRef.current = currentLevel;
-    setDisplay(currentLevel);
-  }, [currentLevel]);
 
   const move = React.useCallback((delta: number) => {
     if (cooldownRef.current) return;
@@ -65,7 +64,23 @@ const LevelSelector = ({ currentLevel, onChange }: { currentLevel: number, onCha
     if (next === displayRef.current) return;
     displayRef.current = next;
     setDisplay(next);
-    onChangeRef.current(next);
+
+    // Cancel any pending settle — user is still scrolling
+    if (settleTimerRef.current) clearTimeout(settleTimerRef.current);
+
+    if (next === 0) {
+      // Scrolled back to standby — fire immediately, no delay needed
+      onChangeRef.current(0);
+    } else {
+      // Wait for user to stop scrolling before acting
+      settleTimerRef.current = setTimeout(() => {
+        onChangeRef.current(displayRef.current);
+        // Return display to s after settling
+        displayRef.current = 0;
+        setDisplay(0);
+      }, SETTLE_MS);
+    }
+
     cooldownRef.current = true;
     setTimeout(() => { cooldownRef.current = false; }, COOLDOWN_MS);
   }, []);
@@ -1011,7 +1026,7 @@ export default function App() {
             currentLevel={viewLevel}
             onChange={(l) => {
               setViewLevel(l);
-              const neededAuthLevel = 4 - l;
+              const neededAuthLevel = l === 0 ? 4 : 4 - l;
               if (authLevel > neededAuthLevel) {
                 // Need higher clearance — ask for credential
                 setPendingAuthLevel(neededAuthLevel);
