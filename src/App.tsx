@@ -120,7 +120,7 @@ const LevelSelector = ({ onChange }: { currentLevel: number, onChange: (l: numbe
       >
         <motion.div
           animate={{ y: -display * 40 }}
-          transition={{ type: "spring", stiffness: 400, damping: 35, mass: 0.6 }}
+          transition={{ type: "spring", stiffness: 320, damping: 38, mass: 0.5 }}
           className="absolute inset-x-0 top-0"
           drag="y"
           dragConstraints={{ top: 0, bottom: 0 }}
@@ -191,7 +191,7 @@ function AuthModal({ authLevel, targetLevel, totpStatus, authInput, setAuthInput
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: 0.2 }}
+      transition={{ duration: 0.25, ease: "easeInOut" }}
     >
       {/* Backdrop */}
       <motion.div
@@ -204,10 +204,10 @@ function AuthModal({ authLevel, targetLevel, totpStatus, authInput, setAuthInput
       {/* Card */}
       <motion.div
         className="bg-zinc-950/90 backdrop-blur-xl border border-zinc-800/60 p-8 rounded-2xl w-full max-w-md shadow-2xl relative"
-        initial={{ opacity: 0, scale: 0.94, y: 16 }}
+        initial={{ opacity: 0, scale: 0.97, y: 8 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.94, y: 16 }}
-        transition={{ type: "spring", stiffness: 380, damping: 30, mass: 0.8 }}
+        exit={{ opacity: 0, scale: 0.97, y: 8 }}
+        transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
       >
         <button
           onClick={onClose}
@@ -219,9 +219,9 @@ function AuthModal({ authLevel, targetLevel, totpStatus, authInput, setAuthInput
         <div className="flex justify-center mb-6">
           <motion.div
             className={`p-4 rounded-full ${levelColor}`}
-            initial={{ scale: 0.7, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            transition={{ delay: 0.1, type: "spring", stiffness: 400, damping: 25 }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.25, delay: 0.1, ease: "easeOut" }}
           >{levelIcon}</motion.div>
         </div>
         <h2 className="text-2xl font-bold text-white text-center mb-2 tracking-tight">Unlock</h2>
@@ -1118,8 +1118,9 @@ export default function App() {
         <main className="flex-1 overflow-y-auto p-6 w-full">
           {activeTab === "vault" && (
             <motion.div
-              initial={{ opacity: 0, y: 10 }}
+              initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.25, ease: "easeOut" }}
               className="w-full space-y-6"
             >
               <div className="flex justify-end items-center gap-4">
@@ -1605,8 +1606,9 @@ export default function App() {
 
           {activeTab === "logs" && (
             <motion.div
-              initial={{ opacity: 0, y: 10 }}
+              initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.25, ease: "easeOut" }}
               className="w-full space-y-6"
             >
               <div className="bg-zinc-950/50 border border-zinc-900 rounded-xl overflow-hidden shadow-2xl">
@@ -1668,8 +1670,9 @@ export default function App() {
 
           {activeTab === "docs" && (
             <motion.div
-              initial={{ opacity: 0, y: 10 }}
+              initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.25, ease: "easeOut" }}
               className="w-full space-y-6"
             >
               <div className="flex items-start gap-4 bg-amber-500/10 border border-amber-500/20 p-4 rounded-xl mb-6 shadow-sm">
@@ -1734,10 +1737,10 @@ export default function App() {
             />
             {/* Slide-over panel */}
             <motion.div
-              initial={{ x: "100%" }}
-              animate={{ x: 0 }}
-              exit={{ x: "100%" }}
-              transition={{ type: "spring", stiffness: 300, damping: 30 }}
+              initial={{ x: "100%", opacity: 0 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{ x: "100%", opacity: 0 }}
+              transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
               className="fixed right-0 top-0 h-full w-full max-w-xl bg-black border-l border-zinc-900 z-50 flex flex-col shadow-2xl"
             >
               {/* Header */}
