@@ -882,7 +882,7 @@ export default function App() {
 
   const getLevelInfo = (level: number) => {
     switch(level) {
-      case 3: return { name: "Public / Low Risk", color: "text-zinc-300", bg: "bg-zinc-800", desc: "Social handles, public ENS, guest Wi-Fi, basic subs" };
+      case 3: return { name: "Everyday Info", color: "text-zinc-300", bg: "bg-zinc-800", desc: "Social profiles, Wi-Fi, car plates, subs — low impact if exposed" };
       case 2: return { name: "Professional / Social", color: "text-blue-400", bg: "bg-blue-900/30", desc: "API keys, IAM roles, DAO voting, AV access" };
       case 1: return { name: "Personal / Infra", color: "text-amber-400", bg: "bg-amber-900/30", desc: "Financial APIs, HealthKit/BCI data, SSH, smart home admin" };
       case 0: return { name: "Critical / Private", color: "text-red-400", bg: "bg-red-900/30", desc: "Seed phrases, master identity hashes, break-glass keys" };
@@ -912,7 +912,7 @@ export default function App() {
       )}
 
       {/* Sidebar */}
-      <div className="w-64 border-r border-zinc-900 bg-black flex flex-col z-10">
+      <div className="w-64 bg-black flex flex-col z-10">
         <div className="h-16 bg-black flex items-center justify-center border-b border-zinc-900">
           <img src="/logo.png" alt="lvls" className="h-10 w-auto object-contain" />
         </div>
@@ -932,7 +932,7 @@ export default function App() {
           </button>
         </nav>
 
-        <div className="px-4 py-4 border-t border-zinc-900 flex items-center justify-between bg-black">
+        <div className="px-4 py-4 flex items-center justify-between bg-black">
           <LevelSelector
             currentLevel={viewLevel}
             onChange={(l) => {
@@ -1088,7 +1088,7 @@ export default function App() {
                         }
                         className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-600"
                       >
-                        <option value={3} disabled={authLevel > 3}>Lvl 3 — Public (ENS, Social, Wi-Fi, Public Emails)</option>
+                        <option value={3} disabled={authLevel > 3}>lvl3 — Everyday (Social, Wi-Fi, plates, basic info)</option>
                         <option value={2} disabled={authLevel > 2}>Lvl 2 — Professional (APIs, IAM, Work Email, DAOs)</option>
                         <option value={1} disabled={authLevel > 1}>Lvl 1 — Personal/Infra (Finance, Health, SSH, Personal IDs)</option>
                         <option value={0} disabled={authLevel > 0}>Lvl 0 — Critical (Seeds, Master Identity, BCI, NFC Cards)</option>
@@ -1247,7 +1247,7 @@ export default function App() {
                       <th className="px-5 py-3 font-medium text-right">Actions</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-zinc-900">
+                  <tbody>
                     {(() => {
                       const filtered = secrets.filter((s) => authLevel < 4 && s.level >= authLevel && (vaultLevelFilter.length === 0 || vaultLevelFilter.includes(s.level)));
                       const folderMap = new Map<string, Secret[]>();
@@ -1267,20 +1267,33 @@ export default function App() {
                         return (
                           <React.Fragment key={folderKey}>
                             {label !== null && (
-                              <tr className="bg-zinc-950/80 select-none">
-                                <td colSpan={colSpan} className="px-5 py-2">
-                                  <button
-                                    className="flex items-center gap-2 text-xs font-semibold text-zinc-400 hover:text-zinc-200 transition-colors w-full text-left"
-                                    onClick={() => setCollapsedFolders(prev => {
-                                      const next = new Set(prev);
-                                      next.has(folderKey) ? next.delete(folderKey) : next.add(folderKey);
-                                      return next;
-                                    })}
-                                  >
-                                    <span className={`text-[8px] transition-transform duration-150 inline-block ${isCollapsed ? "" : "rotate-90"}`}>▶</span>
-                                    <span>📁 {folderKey}</span>
-                                    <span className="text-zinc-600 font-normal">{folderSecrets.length}</span>
-                                  </button>
+                              <tr className="bg-zinc-950/60 select-none group/folder">
+                                <td colSpan={colSpan} className="px-5 py-3.5">
+                                  <div className="flex items-center justify-between">
+                                    <button
+                                      className="flex items-center gap-2.5 text-sm font-medium text-zinc-300 hover:text-white transition-colors"
+                                      onClick={() => setCollapsedFolders(prev => {
+                                        const next = new Set(prev);
+                                        next.has(folderKey) ? next.delete(folderKey) : next.add(folderKey);
+                                        return next;
+                                      })}
+                                    >
+                                      <span className={`text-[9px] transition-transform duration-200 inline-block text-zinc-500 ${isCollapsed ? "" : "rotate-90"}`}>▶</span>
+                                      <span className="text-zinc-500">📁</span>
+                                      <span>{folderKey}</span>
+                                      <span className="text-zinc-600 text-xs font-normal">{folderSecrets.length} {folderSecrets.length === 1 ? "secret" : "secrets"}</span>
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        setNewSecret(prev => ({ ...prev, folder: folderKey }));
+                                        setIsAdding(true);
+                                      }}
+                                      className="opacity-0 group-hover/folder:opacity-100 flex items-center gap-1 text-xs text-zinc-500 hover:text-violet-400 transition-all px-2 py-1 rounded-lg hover:bg-zinc-900"
+                                      title={`Add secret to ${folderKey}`}
+                                    >
+                                      <Plus className="w-3 h-3" /> Add
+                                    </button>
+                                  </div>
                                 </td>
                               </tr>
                             )}
@@ -1477,7 +1490,7 @@ export default function App() {
                       <th className="px-6 py-4 font-medium">Details</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-zinc-900">
+                  <tbody>
                     {logs.filter(log => logsLevelFilter.length === 0 || logsLevelFilter.includes(log.user_level)).map((log) => {
                       const details = (() => {
                         try {
@@ -1743,7 +1756,7 @@ export default function App() {
                       <p className="text-xs text-zinc-600 mb-3">Enable TOTP for any level using Google Authenticator, Authy, or any RFC 6238-compatible app.</p>
                       <div className="space-y-3">
                         {[
-                          { level: 3, label: "lvl3 — Public", color: "text-zinc-300" },
+                          { level: 3, label: "lvl3 — Everyday", color: "text-zinc-300" },
                           { level: 2, label: "lvl2 — Professional", color: "text-blue-400" },
                           { level: 1, label: "lvl1 — Personal", color: "text-amber-400" },
                           { level: 0, label: "lvl0 — Critical", color: "text-red-400" },
