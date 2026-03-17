@@ -117,7 +117,7 @@ const LevelSelector = ({ currentLevel, onChange }: { currentLevel: number, onCha
           {['s', 3, 2, 1, 0].map((n, i) => (
             <div
               key={i}
-              className={`h-10 flex items-center justify-start cursor-pointer ${n === 's' ? 'text-zinc-600' : 'text-transparent'}`}
+              className="h-10 flex items-center justify-start cursor-pointer text-violet-400"
               onClick={() => move(i - displayRef.current)}
             >
               {n}
