@@ -1333,8 +1333,8 @@ export default function App() {
                                       })}
                                     >
                                       {isCollapsed
-                                        ? <Folder className="w-4 h-4 text-violet-400/70 shrink-0" />
-                                        : <FolderOpen className="w-4 h-4 text-violet-400 shrink-0" />
+                                        ? <Folder className="w-4 h-4 shrink-0 fill-amber-400 text-amber-500" />
+                                        : <FolderOpen className="w-4 h-4 shrink-0 fill-amber-400 text-amber-500" />
                                       }
                                       <span>{folderKey}</span>
                                       <span className="text-zinc-600 text-xs font-normal">{folderSecrets.length} {folderSecrets.length === 1 ? "secret" : "secrets"}</span>
