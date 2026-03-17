@@ -329,6 +329,37 @@ function requireAuth(minLevel: number) {
 // ---------- Health ----------
 app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
 
+// ---------- Is vault configured? (public — used for onboarding gate) ----------
+app.get("/api/auth/is-setup", (_req, res) => {
+  const row = db.prepare("SELECT COUNT(*) as c FROM auth_config").get() as any;
+  res.json({ configured: row.c > 0 });
+});
+
+// ---------- Bootstrap: first-time lvl3 PIN setup — locked out once any level exists ----------
+app.post("/api/auth/bootstrap", authRateLimit, async (req, res) => {
+  const existing = db.prepare("SELECT COUNT(*) as c FROM auth_config").get() as any;
+  if (existing.c > 0) {
+    return res.status(403).json({ error: "Vault already configured. Use /api/auth/setup." });
+  }
+  const { credential } = req.body;
+  if (!credential) return res.status(400).json({ error: "credential required" });
+  if (!/^\d+$/.test(credential)) return res.status(400).json({ error: "lvl3 must be a numeric PIN" });
+  if (credential.length < 6) return res.status(400).json({ error: "PIN must be at least 6 digits" });
+
+  try {
+    const hash = await argon2.hash(credential, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 1 });
+    db.prepare("INSERT INTO auth_config (level, credential_hash, method, session_ttl) VALUES (3, ?, 'pin', '24h')").run(hash);
+    const sessionId = crypto.randomUUID();
+    const token = jwt.sign({ level: 3, sessionId }, JWT_SECRET, { expiresIn: "24h" });
+    db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
+      .run(sessionId, 3, "bootstrap", JSON.stringify({ msg: "Vault initialised" }));
+    res.json({ success: true, token });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Bootstrap failed" });
+  }
+});
+
 // ---------- Auth: Check setup status ----------
 app.get("/api/auth/status", requireAuth(3), (_req, res) => {
   const rows = db.prepare("SELECT level, method, kem_public_key, totp_enabled, session_ttl FROM auth_config").all() as any[];

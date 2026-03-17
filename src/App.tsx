@@ -618,6 +618,313 @@ function TotpCodeDisplay({ seed }: { seed: string }) {
   );
 }
 
+// ── Onboarding ────────────────────────────────────────────────────────────────
+const ONBOARDING_LEVELS = [
+  { level: 2, label: "lvl2 — Professional", color: "text-indigo-300", border: "border-indigo-800/40", desc: "API keys, work credentials, IAM roles", isPin: false },
+  { level: 1, label: "lvl1 — Personal",     color: "text-amber-300",  border: "border-amber-800/40",  desc: "Finance, SSH keys, health, personal IDs", isPin: false },
+  { level: 0, label: "lvl0 — Critical",     color: "text-rose-300",   border: "border-rose-800/40",   desc: "Seed phrases, master identity, break-glass", isPin: false },
+];
+
+function Onboarding({ onComplete }: { onComplete: (token: string) => void }) {
+  const [step, setStep] = React.useState(0); // 0=welcome 1=pin 2=higher levels 3=done
+  const [direction, setDirection] = React.useState(1);
+
+  // Step 1 — PIN
+  const [pin, setPin] = React.useState("");
+  const [pinConfirm, setPinConfirm] = React.useState("");
+  const [pinError, setPinError] = React.useState("");
+  const [pinLoading, setPinLoading] = React.useState(false);
+  const [vaultToken, setVaultToken] = React.useState("");
+
+  // Step 2 — optional higher levels
+  const [levelCreds, setLevelCreds] = React.useState<Record<number, { cred: string; confirm: string; skip: boolean; done: boolean; error: string }>>({
+    2: { cred: "", confirm: "", skip: false, done: false, error: "" },
+    1: { cred: "", confirm: "", skip: false, done: false, error: "" },
+    0: { cred: "", confirm: "", skip: false, done: false, error: "" },
+  });
+  const [levelSaving, setLevelSaving] = React.useState<number | null>(null);
+
+  const go = (next: number) => {
+    setDirection(next > step ? 1 : -1);
+    setStep(next);
+  };
+
+  const handleCreatePin = async () => {
+    setPinError("");
+    if (!/^\d+$/.test(pin)) return setPinError("PIN must be digits only");
+    if (pin.length < 6) return setPinError("At least 6 digits required");
+    if (pin !== pinConfirm) return setPinError("PINs don't match");
+    setPinLoading(true);
+    try {
+      const res = await fetch("/api/auth/bootstrap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ credential: pin }),
+      });
+      const data = await res.json();
+      if (!res.ok) return setPinError(data.error || "Setup failed");
+      setVaultToken(data.token);
+      go(2);
+    } catch {
+      setPinError("Cannot reach server");
+    } finally {
+      setPinLoading(false);
+    }
+  };
+
+  const handleSaveLevel = async (level: number) => {
+    const { cred, confirm } = levelCreds[level];
+    if (!cred) return setLevelCreds(p => ({ ...p, [level]: { ...p[level], error: "Enter a passphrase" } }));
+    if (cred.length < 6) return setLevelCreds(p => ({ ...p, [level]: { ...p[level], error: "At least 6 characters" } }));
+    if (!/[a-zA-Z]/.test(cred) || !/[0-9]/.test(cred)) return setLevelCreds(p => ({ ...p, [level]: { ...p[level], error: "Mix of letters and numbers required" } }));
+    if (cred !== confirm) return setLevelCreds(p => ({ ...p, [level]: { ...p[level], error: "Passphrases don't match" } }));
+    setLevelSaving(level);
+    setLevelCreds(p => ({ ...p, [level]: { ...p[level], error: "" } }));
+    try {
+      const res = await fetch("/api/auth/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${vaultToken}` },
+        body: JSON.stringify({ level, credential: cred, method: "passphrase" }),
+      });
+      const data = await res.json();
+      if (!res.ok) return setLevelCreds(p => ({ ...p, [level]: { ...p[level], error: data.error || "Failed" } }));
+      setLevelCreds(p => ({ ...p, [level]: { ...p[level], done: true } }));
+    } catch {
+      setLevelCreds(p => ({ ...p, [level]: { ...p[level], error: "Cannot reach server" } }));
+    } finally {
+      setLevelSaving(null);
+    }
+  };
+
+  const allHigherLevelsDone = ONBOARDING_LEVELS.every(({ level }) => levelCreds[level].done || levelCreds[level].skip);
+
+  const variants = {
+    enter: (d: number) => ({ x: d > 0 ? 48 : -48, opacity: 0 }),
+    center: { x: 0, opacity: 1 },
+    exit: (d: number) => ({ x: d > 0 ? -48 : 48, opacity: 0 }),
+  };
+
+  const STEPS = 4;
+  const steps = [
+    // ── Step 0: Welcome ──────────────────────────────────────────────────────
+    <div key="welcome" className="flex flex-col items-center text-center gap-6">
+      <img src="/logo.png" alt="lvls" className="h-16 w-auto object-contain opacity-90" />
+      <div>
+        <h1 className="text-2xl font-bold text-white tracking-tight mb-2">Welcome to lvls</h1>
+        <p className="text-zinc-400 text-sm leading-relaxed max-w-xs">
+          Your local-first key vault. Four independent security levels,
+          each with its own credential and encryption key.
+          Nothing leaves your machine.
+        </p>
+      </div>
+      <div className="w-full bg-zinc-900/60 border border-zinc-800/60 rounded-xl px-5 py-4 text-left space-y-2.5">
+        {[
+          { color: "bg-zinc-500", label: "lvl3", desc: "Everyday — social, Wi-Fi, subscriptions" },
+          { color: "bg-indigo-500/70", label: "lvl2", desc: "Professional — API keys, IAM, work creds" },
+          { color: "bg-amber-500/60", label: "lvl1", desc: "Personal — finance, SSH, health data" },
+          { color: "bg-rose-500/60", label: "lvl0", desc: "Critical — seed phrases, master keys" },
+        ].map(({ color, label, desc }) => (
+          <div key={label} className="flex items-center gap-3">
+            <span className={`w-2 h-2 rounded-full shrink-0 ${color}`} />
+            <span className="text-xs font-mono text-zinc-300 w-8 shrink-0">{label}</span>
+            <span className="text-xs text-zinc-500">{desc}</span>
+          </div>
+        ))}
+      </div>
+      <button
+        onClick={() => go(1)}
+        className="w-full bg-violet-700 hover:bg-violet-600 text-white font-medium py-3 rounded-xl transition-colors"
+      >
+        Begin Setup
+      </button>
+    </div>,
+
+    // ── Step 1: Create PIN ────────────────────────────────────────────────────
+    <div key="pin" className="flex flex-col gap-5">
+      <div>
+        <div className="flex items-center gap-2 mb-1">
+          <Lock className="w-4 h-4 text-zinc-400" />
+          <h2 className="text-lg font-semibold text-white">Create your vault PIN</h2>
+        </div>
+        <p className="text-zinc-500 text-xs leading-relaxed">
+          lvl3 is your entry point. This PIN unlocks everyday secrets and gives access to the rest of the vault. Min 6 digits.
+        </p>
+      </div>
+      <div className="space-y-3">
+        <input
+          type="password"
+          inputMode="numeric"
+          placeholder="PIN (digits only, min 6)"
+          value={pin}
+          onChange={e => { setPin(e.target.value); setPinError(""); }}
+          onKeyDown={e => e.key === "Enter" && handleCreatePin()}
+          className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-violet-600 font-mono tracking-widest"
+          autoFocus
+        />
+        <input
+          type="password"
+          inputMode="numeric"
+          placeholder="Confirm PIN"
+          value={pinConfirm}
+          onChange={e => { setPinConfirm(e.target.value); setPinError(""); }}
+          onKeyDown={e => e.key === "Enter" && handleCreatePin()}
+          className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-violet-600 font-mono tracking-widest"
+        />
+        {pinError && <p className="text-rose-300 text-xs">{pinError}</p>}
+      </div>
+      <button
+        onClick={handleCreatePin}
+        disabled={pinLoading}
+        className="w-full bg-violet-700 hover:bg-violet-600 disabled:opacity-40 text-white font-medium py-3 rounded-xl transition-colors"
+      >
+        {pinLoading ? "Setting up…" : "Create PIN & Continue"}
+      </button>
+    </div>,
+
+    // ── Step 2: Optional higher levels ───────────────────────────────────────
+    <div key="levels" className="flex flex-col gap-4">
+      <div>
+        <h2 className="text-lg font-semibold text-white mb-1">Secure your higher levels</h2>
+        <p className="text-zinc-500 text-xs leading-relaxed">
+          Optional — configure these now or later in Settings. Each level is fully independent.
+        </p>
+      </div>
+      <div className="space-y-3">
+        {ONBOARDING_LEVELS.map(({ level, label, color, border, desc }) => {
+          const s = levelCreds[level];
+          return (
+            <div key={level} className={`border rounded-xl px-4 py-3.5 space-y-3 ${s.done ? "border-violet-800/40 bg-violet-950/10" : s.skip ? "border-zinc-800/40 opacity-50" : `${border} bg-zinc-900/30`}`}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className={`text-sm font-medium ${color}`}>{label}</p>
+                  <p className="text-xs text-zinc-600 mt-0.5">{desc}</p>
+                </div>
+                {s.done && <Check className="w-4 h-4 text-violet-400 shrink-0" />}
+                {!s.done && (
+                  <button
+                    onClick={() => setLevelCreds(p => ({ ...p, [level]: { ...p[level], skip: !p[level].skip } }))}
+                    className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
+                  >
+                    {s.skip ? "Set up" : "Skip"}
+                  </button>
+                )}
+              </div>
+              {!s.done && !s.skip && (
+                <div className="space-y-2">
+                  <input
+                    type="password"
+                    placeholder="Passphrase (letters + numbers, min 6)"
+                    value={s.cred}
+                    onChange={e => setLevelCreds(p => ({ ...p, [level]: { ...p[level], cred: e.target.value, error: "" } }))}
+                    className="w-full bg-zinc-950 border border-zinc-700/60 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-violet-600/60"
+                  />
+                  <input
+                    type="password"
+                    placeholder="Confirm passphrase"
+                    value={s.confirm}
+                    onChange={e => setLevelCreds(p => ({ ...p, [level]: { ...p[level], confirm: e.target.value, error: "" } }))}
+                    className="w-full bg-zinc-950 border border-zinc-700/60 rounded-lg px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-violet-600/60"
+                  />
+                  {s.error && <p className="text-rose-300 text-xs">{s.error}</p>}
+                  <button
+                    onClick={() => handleSaveLevel(level)}
+                    disabled={levelSaving === level}
+                    className="text-xs bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-200 px-4 py-1.5 rounded-lg transition-colors"
+                  >
+                    {levelSaving === level ? "Saving…" : "Save"}
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <button
+        onClick={() => go(3)}
+        disabled={!allHigherLevelsDone}
+        className="w-full bg-violet-700 hover:bg-violet-600 disabled:opacity-40 text-white font-medium py-3 rounded-xl transition-colors mt-1"
+      >
+        {allHigherLevelsDone ? "Continue" : "Set or skip all levels to continue"}
+      </button>
+    </div>,
+
+    // ── Step 3: Done ─────────────────────────────────────────────────────────
+    <div key="done" className="flex flex-col items-center text-center gap-6">
+      <div className="w-16 h-16 rounded-full bg-violet-900/30 border border-violet-700/40 flex items-center justify-center">
+        <Check className="w-8 h-8 text-violet-400" />
+      </div>
+      <div>
+        <h2 className="text-2xl font-bold text-white mb-2">Vault ready</h2>
+        <p className="text-zinc-400 text-sm leading-relaxed max-w-xs">
+          Your credentials are encrypted and stored locally.
+          {Object.values(levelCreds).some(l => l.done) && " Higher levels are active and sealed."}
+          {Object.values(levelCreds).every(l => l.skip) && " You can configure higher levels anytime from Settings."}
+        </p>
+      </div>
+      <div className="w-full bg-zinc-900/60 border border-zinc-800/60 rounded-xl px-5 py-3.5 text-left space-y-1.5">
+        <p className="text-xs font-medium text-zinc-300 mb-2">Configured levels</p>
+        {[
+          { level: 3, label: "lvl3 — PIN", color: "text-zinc-300", active: true },
+          ...ONBOARDING_LEVELS.map(l => ({ ...l, active: levelCreds[l.level].done })),
+        ].map(({ level, label, color, active }) => (
+          <div key={level} className="flex items-center gap-2.5">
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${active ? "bg-violet-500" : "bg-zinc-700"}`} />
+            <span className={`text-xs font-mono ${active ? color : "text-zinc-600"}`}>{label}</span>
+            <span className="text-xs text-zinc-600 ml-auto">{active ? "active" : "not set"}</span>
+          </div>
+        ))}
+      </div>
+      <button
+        onClick={() => onComplete(vaultToken)}
+        className="w-full bg-violet-700 hover:bg-violet-600 text-white font-medium py-3 rounded-xl transition-colors"
+      >
+        Enter Vault
+      </button>
+    </div>,
+  ];
+
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center p-4">
+      <div className="w-full max-w-sm">
+        {/* Progress dots */}
+        <div className="flex items-center justify-center gap-2 mb-8">
+          {Array.from({ length: STEPS }).map((_, i) => (
+            <span
+              key={i}
+              className={`rounded-full transition-all duration-300 ${i === step ? "w-5 h-1.5 bg-violet-500" : i < step ? "w-1.5 h-1.5 bg-violet-700" : "w-1.5 h-1.5 bg-zinc-700"}`}
+            />
+          ))}
+        </div>
+
+        {/* Step content */}
+        <AnimatePresence mode="wait" custom={direction}>
+          <motion.div
+            key={step}
+            custom={direction}
+            variants={variants}
+            initial="enter"
+            animate="center"
+            exit="exit"
+            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+          >
+            {steps[step]}
+          </motion.div>
+        </AnimatePresence>
+
+        {/* Back link */}
+        {step > 0 && step < 3 && (
+          <button
+            onClick={() => go(step - 1)}
+            className="mt-5 text-xs text-zinc-600 hover:text-zinc-400 transition-colors w-full text-center"
+          >
+            ← Back
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<"vault" | "logs">("vault");
   const [secrets, setSecrets] = useState<Secret[]>([]);
@@ -635,6 +942,15 @@ export default function App() {
   });
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
   
+  // Vault setup gate — null=loading, false=needs onboarding, true=configured
+  const [isVaultSetup, setIsVaultSetup] = useState<boolean | null>(null);
+  useEffect(() => {
+    fetch("/api/auth/is-setup")
+      .then(r => r.json())
+      .then(d => setIsVaultSetup(d.configured))
+      .catch(() => setIsVaultSetup(false));
+  }, []);
+
   // Progressive Auth State
   const [authLevel, setAuthLevel] = useState<number>(4);
   const [viewLevel, setViewLevel] = useState<number>(0);
@@ -1051,6 +1367,26 @@ export default function App() {
   };
 
   // AuthModal is defined outside App (see below) to prevent re-animation on every keystroke
+
+  // Loading splash
+  if (isVaultSetup === null) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <div className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-pulse" />
+      </div>
+    );
+  }
+
+  // First-time onboarding
+  if (isVaultSetup === false) {
+    return (
+      <Onboarding onComplete={(token) => {
+        setSessionToken(token);
+        setAuthLevel(3);
+        setIsVaultSetup(true);
+      }} />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-black text-zinc-300 font-sans flex">
