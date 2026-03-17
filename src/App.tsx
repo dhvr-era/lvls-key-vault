@@ -23,6 +23,8 @@ import {
   Copy,
   Globe,
   User,
+  Folder,
+  FolderOpen,
 } from "lucide-react";
 
 // ---------- Helpers ----------
@@ -1330,8 +1332,10 @@ export default function App() {
                                         return next;
                                       })}
                                     >
-                                      <span className={`text-[9px] transition-transform duration-200 inline-block text-zinc-500 ${isCollapsed ? "" : "rotate-90"}`}>▶</span>
-                                      <span className="text-zinc-500">📁</span>
+                                      {isCollapsed
+                                        ? <Folder className="w-4 h-4 text-violet-400/70 shrink-0" />
+                                        : <FolderOpen className="w-4 h-4 text-violet-400 shrink-0" />
+                                      }
                                       <span>{folderKey}</span>
                                       <span className="text-zinc-600 text-xs font-normal">{folderSecrets.length} {folderSecrets.length === 1 ? "secret" : "secrets"}</span>
                                     </button>
