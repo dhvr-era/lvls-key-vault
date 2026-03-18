@@ -59,6 +59,7 @@ app.use("/api", (_req, res, next) => {
 
 // ---------- CORS — Fix 5: restrict to specific extension ID if set ----------
 const ALLOWED_EXTENSION_ID = process.env.EXTENSION_ID || null;
+const CLUTCH_ORIGIN = process.env.CLUTCH_ORIGIN || null;
 app.use((req, res, next) => {
   const origin = req.headers.origin || "";
   const isLocalhost = origin.startsWith("http://localhost") || origin.startsWith("https://localhost") ||
@@ -69,7 +70,8 @@ app.use((req, res, next) => {
     origin === `chrome-extension://${ALLOWED_EXTENSION_ID}` ||
     origin === `moz-extension://${ALLOWED_EXTENSION_ID}`
   );
-  if (isLocalhost || extensionAllowed) {
+  const isClutch = !!CLUTCH_ORIGIN && origin === CLUTCH_ORIGIN;
+  if (isLocalhost || extensionAllowed || isClutch) {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -149,6 +151,29 @@ db.exec(`
     ip TEXT PRIMARY KEY,
     count INTEGER DEFAULT 0,
     reset_at INTEGER NOT NULL
+  );
+`);
+
+// ---------- Machine Vaults ----------
+db.exec(`
+  CREATE TABLE IF NOT EXISTS machine_vaults (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT,
+    kem_public_key TEXT,
+    totp_secret TEXT,
+    totp_enabled INTEGER DEFAULT 0,
+    ttl INTEGER DEFAULT 14400,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS machine_secrets (
+    id TEXT PRIMARY KEY,
+    vault_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    encrypted_value TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (vault_id) REFERENCES machine_vaults(id) ON DELETE CASCADE
   );
 `);
 
@@ -712,6 +737,165 @@ app.delete("/api/secrets/:id", requireAuth(3), (req, res) => {
     console.error(err);
     res.status(500).json({ error: "Failed to delete secret" });
   }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MACHINE VAULTS — isolated, ML-KEM encrypted, TOTP-gated credential stores
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Create a machine vault
+app.post("/api/machine/vaults", requireAuth(3), (req, res) => {
+  const { name, description, ttl } = req.body;
+  if (!name || typeof name !== "string" || !/^[a-z0-9_-]+$/i.test(name)) {
+    return res.status(400).json({ error: "name required (alphanumeric, hyphens, underscores)" });
+  }
+  const ttlVal = typeof ttl === "number" && ttl > 0 ? ttl : 14400;
+  const id = crypto.randomUUID();
+  try {
+    db.prepare("INSERT INTO machine_vaults (id, name, description, ttl) VALUES (?, ?, ?, ?)")
+      .run(id, name.toLowerCase(), description || null, ttlVal);
+    res.json({ id, name: name.toLowerCase(), description: description || null, ttl: ttlVal });
+  } catch (err: any) {
+    if (err.message?.includes("UNIQUE")) return res.status(409).json({ error: "Vault name already exists" });
+    res.status(500).json({ error: "Failed to create vault" });
+  }
+});
+
+// List machine vaults
+app.get("/api/machine/vaults", requireAuth(3), (_req, res) => {
+  const vaults = db.prepare(
+    "SELECT id, name, description, ttl, totp_enabled, CASE WHEN kem_public_key IS NOT NULL THEN 1 ELSE 0 END as has_kem_key, created_at FROM machine_vaults ORDER BY created_at DESC"
+  ).all();
+  res.json(vaults);
+});
+
+// Get single vault
+app.get("/api/machine/vaults/:id", requireAuth(3), (req, res) => {
+  const vault = db.prepare(
+    "SELECT id, name, description, ttl, totp_enabled, CASE WHEN kem_public_key IS NOT NULL THEN 1 ELSE 0 END as has_kem_key, created_at FROM machine_vaults WHERE id = ?"
+  ).get(req.params.id) as any;
+  if (!vault) return res.status(404).json({ error: "Vault not found" });
+  const count = (db.prepare("SELECT COUNT(*) as c FROM machine_secrets WHERE vault_id = ?").get(req.params.id) as any).c;
+  res.json({ ...vault, secret_count: count });
+});
+
+// Delete machine vault
+app.delete("/api/machine/vaults/:id", requireAuth(3), (req, res) => {
+  const vault = db.prepare("SELECT id FROM machine_vaults WHERE id = ?").get(req.params.id);
+  if (!vault) return res.status(404).json({ error: "Vault not found" });
+  db.prepare("DELETE FROM machine_vaults WHERE id = ?").run(req.params.id);
+  res.json({ success: true });
+});
+
+// Register ML-KEM public key for a vault
+app.put("/api/machine/vaults/:id/kem-key", requireAuth(3), (req, res) => {
+  const { kem_public_key } = req.body;
+  if (!kem_public_key || typeof kem_public_key !== "string") {
+    return res.status(400).json({ error: "kem_public_key required" });
+  }
+  const vault = db.prepare("SELECT id FROM machine_vaults WHERE id = ?").get(req.params.id);
+  if (!vault) return res.status(404).json({ error: "Vault not found" });
+  db.prepare("UPDATE machine_vaults SET kem_public_key = ? WHERE id = ?").run(kem_public_key, req.params.id);
+  res.json({ success: true });
+});
+
+// Get ML-KEM public key for a vault (used when adding secrets from another client)
+app.get("/api/machine/vaults/:id/kem-key", requireAuth(3), (req, res) => {
+  const vault = db.prepare("SELECT kem_public_key FROM machine_vaults WHERE id = ?").get(req.params.id) as any;
+  if (!vault) return res.status(404).json({ error: "Vault not found" });
+  if (!vault.kem_public_key) return res.status(404).json({ error: "No KEM key registered for this vault" });
+  res.json({ kem_public_key: vault.kem_public_key });
+});
+
+// TOTP setup for a machine vault
+app.post("/api/machine/vaults/:id/totp/setup", requireAuth(3), (req, res) => {
+  const vault = db.prepare("SELECT id, name FROM machine_vaults WHERE id = ?").get(req.params.id) as any;
+  if (!vault) return res.status(404).json({ error: "Vault not found" });
+  const secret = generateTotpSecret();
+  const encrypted = encryptTotp(secret);
+  db.prepare("UPDATE machine_vaults SET totp_secret = ?, totp_enabled = 0 WHERE id = ?").run(encrypted, req.params.id);
+  const uri = `otpauth://totp/lvls:machine-${vault.name}?secret=${secret}&issuer=lvls-vault&algorithm=SHA1&digits=6&period=30`;
+  res.json({ uri, secret });
+});
+
+// Confirm TOTP for a machine vault
+app.post("/api/machine/vaults/:id/totp/confirm", requireAuth(3), (req, res) => {
+  const { totp } = req.body;
+  if (!totp) return res.status(400).json({ error: "totp required" });
+  const vault = db.prepare("SELECT totp_secret FROM machine_vaults WHERE id = ?").get(req.params.id) as any;
+  if (!vault) return res.status(404).json({ error: "Vault not found" });
+  if (!vault.totp_secret) return res.status(400).json({ error: "Run TOTP setup first" });
+  if (!verifyTotp(decryptTotp(vault.totp_secret), totp)) {
+    return res.status(401).json({ error: "Invalid TOTP code" });
+  }
+  db.prepare("UPDATE machine_vaults SET totp_enabled = 1 WHERE id = ?").run(req.params.id);
+  res.json({ success: true });
+});
+
+// Add a secret to a machine vault (value already ML-KEM encrypted by client)
+app.post("/api/machine/vaults/:id/secrets", requireAuth(3), (req, res) => {
+  const { name, encrypted_value } = req.body;
+  if (!name || !encrypted_value) return res.status(400).json({ error: "name and encrypted_value required" });
+  if (typeof name !== "string" || name.length > 128) return res.status(400).json({ error: "Invalid secret name" });
+  const vault = db.prepare("SELECT id FROM machine_vaults WHERE id = ?").get(req.params.id);
+  if (!vault) return res.status(404).json({ error: "Vault not found" });
+  const id = crypto.randomUUID();
+  try {
+    db.prepare("INSERT INTO machine_secrets (id, vault_id, name, encrypted_value) VALUES (?, ?, ?, ?)")
+      .run(id, req.params.id, name, encrypted_value);
+    res.json({ id, name });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to store secret" });
+  }
+});
+
+// List secrets in a vault (names only — no values)
+app.get("/api/machine/vaults/:id/secrets", requireAuth(3), (req, res) => {
+  const vault = db.prepare("SELECT id FROM machine_vaults WHERE id = ?").get(req.params.id);
+  if (!vault) return res.status(404).json({ error: "Vault not found" });
+  const secrets = db.prepare("SELECT id, name, created_at FROM machine_secrets WHERE vault_id = ? ORDER BY name ASC").all(req.params.id);
+  res.json(secrets);
+});
+
+// Delete a secret from a vault
+app.delete("/api/machine/vaults/:id/secrets/:secretId", requireAuth(3), (req, res) => {
+  const secret = db.prepare("SELECT id FROM machine_secrets WHERE id = ? AND vault_id = ?").get(req.params.secretId, req.params.id);
+  if (!secret) return res.status(404).json({ error: "Secret not found" });
+  db.prepare("DELETE FROM machine_secrets WHERE id = ?").run(req.params.secretId);
+  res.json({ success: true });
+});
+
+// ── Credential Request — TOTP-gated, no session auth required ──────────────
+// This is the machine-facing endpoint. TOTP is the sole auth gate.
+app.post("/api/machine/vaults/:id/request", authRateLimit, (req, res) => {
+  const vault = db.prepare("SELECT id, name, totp_secret, totp_enabled, ttl, kem_public_key FROM machine_vaults WHERE id = ?").get(req.params.id) as any;
+  if (!vault) return res.status(404).json({ error: "Vault not found" });
+  if (!vault.kem_public_key) return res.status(400).json({ error: "Vault has no KEM key — not ready for use" });
+
+  const { totp } = req.body;
+  if (vault.totp_enabled && vault.totp_secret) {
+    if (!totp) return res.status(401).json({ error: "TOTP required", totpRequired: true });
+    if (!verifyTotp(decryptTotp(vault.totp_secret), totp)) {
+      rateLimitOnFailure((req as any).rateLimitIp);
+      db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
+        .run((req as any).rateLimitIp || "anon", -1, "machine_auth_failed", JSON.stringify({ vault: vault.name }));
+      return res.status(401).json({ error: "Invalid TOTP code" });
+    }
+    // Replay prevention — scope code to this vault
+    const replayKey = `${vault.id}:${totp}`;
+    const used = db.prepare("SELECT 1 FROM used_totps WHERE code = ? AND level = ?").get(replayKey, -1);
+    if (used) return res.status(401).json({ error: "TOTP code already used" });
+    db.prepare("INSERT INTO used_totps (code, level, expires_at) VALUES (?, ?, ?)").run(replayKey, -1, Date.now() + 90_000);
+  }
+
+  rateLimitClear((req as any).rateLimitIp);
+  const secrets = db.prepare("SELECT id, name, encrypted_value FROM machine_secrets WHERE vault_id = ?").all(vault.id);
+  const expiresAt = new Date(Date.now() + vault.ttl * 1_000).toISOString();
+
+  db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
+    .run((req as any).rateLimitIp || "anon", -1, "machine_request", JSON.stringify({ vault: vault.name, secrets: secrets.length }));
+
+  res.json({ secrets, expires_at: expiresAt, vault_name: vault.name, ttl: vault.ttl });
 });
 
 // ---------- Vault: Nuke (wipe everything) ----------
