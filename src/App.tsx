@@ -39,7 +39,7 @@ function copyToClipboard(text: string) {
 }
 import { motion, AnimatePresence } from "motion/react";
 import type { Secret, SessionLog } from "./types";
-import { encryptForLevel, decryptForLevel, generateKemKeyPair, encryptAES, decryptAES } from "./lib/crypto";
+import { encryptForLevel, decryptForLevel, generateKemKeyPair, hybridEncrypt, encryptAES, decryptAES } from "./lib/crypto";
 
 const SETTLE_MS = 2000; // ms after last scroll before auth/content fires
 
@@ -926,7 +926,7 @@ function Onboarding({ onComplete }: { onComplete: (token: string) => void }) {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<"vault" | "logs">("vault");
+  const [activeTab, setActiveTab] = useState<"vault" | "logs" | "machines">("vault");
   const [secrets, setSecrets] = useState<Secret[]>([]);
   const [logs, setLogs] = useState<SessionLog[]>([]);
   const [isAdding, setIsAdding] = useState(false);
@@ -941,6 +941,18 @@ export default function App() {
     folder: "",
   });
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+
+  // Machine Vaults state
+  interface MachineVault { id: string; name: string; description: string | null; ttl: number; totp_enabled: number; has_kem_key: number; created_at: string; secret_count?: number; }
+  interface MachineSecret { id: string; name: string; created_at: string; }
+  const [machineVaults, setMachineVaults] = useState<MachineVault[]>([]);
+  const [selectedVault, setSelectedVault] = useState<MachineVault | null>(null);
+  const [vaultSecrets, setVaultSecrets] = useState<MachineSecret[]>([]);
+  const [isAddingVault, setIsAddingVault] = useState(false);
+  const [isAddingMachineSecret, setIsAddingMachineSecret] = useState(false);
+  const [newVault, setNewVault] = useState({ name: "", description: "", ttl: "14400" });
+  const [newMachineSecret, setNewMachineSecret] = useState({ name: "", value: "" });
+  const [pendingPrivateKey, setPendingPrivateKey] = useState<{ vaultName: string; privateKey: string } | null>(null);
   
   // Vault setup gate — null=loading, false=needs onboarding, true=configured
   const [isVaultSetup, setIsVaultSetup] = useState<boolean | null>(null);
@@ -998,6 +1010,7 @@ export default function App() {
     if (authLevel <= 3) {
       fetchSecrets();
       fetchLogs();
+      fetchMachineVaults();
       setVaultLevelFilter([authLevel]);
       setShowLevelCol(false);
       setSearchQuery("");
@@ -1084,6 +1097,117 @@ export default function App() {
       }
     } catch (error) {
       console.error("Failed to fetch logs", error);
+    }
+  };
+
+  const fetchMachineVaults = async () => {
+    try {
+      const res = await fetch("/api/machine/vaults", {
+        headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
+      });
+      if (res.ok) setMachineVaults(await res.json());
+    } catch (error) {
+      console.error("Failed to fetch machine vaults", error);
+    }
+  };
+
+  const fetchVaultSecrets = async (vaultId: string) => {
+    try {
+      const res = await fetch(`/api/machine/vaults/${vaultId}/secrets`, {
+        headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
+      });
+      if (res.ok) setVaultSecrets(await res.json());
+    } catch (error) {
+      console.error("Failed to fetch vault secrets", error);
+    }
+  };
+
+  const createMachineVault = async () => {
+    if (!newVault.name) return;
+    try {
+      // 1. Create the vault
+      const res = await fetch("/api/machine/vaults", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}) },
+        body: JSON.stringify({ name: newVault.name, description: newVault.description || null, ttl: parseInt(newVault.ttl) || 14400 }),
+      });
+      if (!res.ok) return;
+      const vault = await res.json();
+
+      // 2. Generate ML-KEM-768 keypair
+      const kemPair = await generateKemKeyPair();
+
+      // 3. Register public key with the vault
+      await fetch(`/api/machine/vaults/${vault.id}/kem-key`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}) },
+        body: JSON.stringify({ kem_public_key: kemPair.publicKey }),
+      });
+
+      // 4. Show private key for download (one-time)
+      setPendingPrivateKey({ vaultName: newVault.name, privateKey: kemPair.privateKey });
+      setNewVault({ name: "", description: "", ttl: "14400" });
+      setIsAddingVault(false);
+      fetchMachineVaults();
+    } catch (error) {
+      console.error("Failed to create vault", error);
+    }
+  };
+
+  const deleteMachineVault = async (id: string) => {
+    try {
+      const res = await fetch(`/api/machine/vaults/${id}`, {
+        method: "DELETE",
+        headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
+      });
+      if (res.ok) {
+        if (selectedVault?.id === id) { setSelectedVault(null); setVaultSecrets([]); }
+        fetchMachineVaults();
+      }
+    } catch (error) {
+      console.error("Failed to delete vault", error);
+    }
+  };
+
+  const addMachineSecret = async () => {
+    if (!selectedVault || !newMachineSecret.name || !newMachineSecret.value) return;
+    try {
+      // Fetch vault's public key
+      const kemRes = await fetch(`/api/machine/vaults/${selectedVault.id}/kem-key`, {
+        headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
+      });
+      if (!kemRes.ok) { console.error("Vault has no KEM key"); return; }
+      const { kem_public_key } = await kemRes.json();
+
+      // Hybrid encrypt: ML-KEM-768 + AES-256-GCM
+      const encrypted = await hybridEncrypt(newMachineSecret.value, kem_public_key);
+      const encryptedValue = JSON.stringify(encrypted);
+
+      const res = await fetch(`/api/machine/vaults/${selectedVault.id}/secrets`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}) },
+        body: JSON.stringify({ name: newMachineSecret.name, encrypted_value: encryptedValue }),
+      });
+      if (res.ok) {
+        setNewMachineSecret({ name: "", value: "" });
+        setIsAddingMachineSecret(false);
+        fetchVaultSecrets(selectedVault.id);
+      }
+    } catch (error) {
+      console.error("Failed to add secret", error);
+    }
+  };
+
+  const deleteMachineSecret = async (secretId: string) => {
+    if (!selectedVault) return;
+    try {
+      const res = await fetch(`/api/machine/vaults/${selectedVault.id}/secrets/${secretId}`, {
+        method: "DELETE",
+        headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
+      });
+      if (res.ok) fetchVaultSecrets(selectedVault.id);
+    } catch (error) {
+      console.error("Failed to delete secret", error);
     }
   };
 
@@ -1423,6 +1547,12 @@ export default function App() {
             className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 ${activeTab === "vault" ? "bg-zinc-900 text-violet-400 border border-zinc-800" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/60"}`}
           >
             <Key className="w-4 h-4 shrink-0" /> Secrets
+          </button>
+          <button
+            onClick={() => { setActiveTab("machines"); fetchMachineVaults(); }}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 ${activeTab === "machines" ? "bg-zinc-900 text-violet-400 border border-zinc-800" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/60"}`}
+          >
+            <Hexagon className="w-4 h-4 shrink-0" /> Machine Vaults
           </button>
           <button
             onClick={() => setActiveTab("logs")}
@@ -2048,6 +2178,298 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
+            </motion.div>
+          )}
+
+          {activeTab === "machines" && (
+            <motion.div
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.25, ease: "easeOut" }}
+              className="w-full space-y-6"
+            >
+              {/* Private Key Download Modal */}
+              {pendingPrivateKey && (
+                <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50">
+                  <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-8 max-w-lg w-full mx-4 shadow-2xl">
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="p-2 bg-amber-500/10 rounded-lg">
+                        <AlertTriangle className="w-5 h-5 text-amber-500" />
+                      </div>
+                      <h3 className="text-lg font-semibold text-white">Save Private Key</h3>
+                    </div>
+                    <p className="text-sm text-zinc-400 mb-2">
+                      Vault <span className="text-white font-medium">{pendingPrivateKey.vaultName}</span> created with ML-KEM-768 encryption.
+                    </p>
+                    <p className="text-sm text-amber-400 mb-4">
+                      This private key is shown once. Download it now. The service that reads from this vault needs this key to decrypt secrets.
+                    </p>
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 mb-6 max-h-24 overflow-y-auto">
+                      <code className="text-xs text-zinc-500 break-all font-mono">{pendingPrivateKey.privateKey.slice(0, 80)}...</code>
+                    </div>
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => {
+                          const blob = new Blob([pendingPrivateKey.privateKey], { type: "text/plain" });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement("a");
+                          a.href = url;
+                          a.download = `${pendingPrivateKey.vaultName}.kem.key`;
+                          a.click();
+                          URL.revokeObjectURL(url);
+                        }}
+                        className="flex-1 bg-violet-600 hover:bg-violet-500 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2"
+                      >
+                        <Key className="w-4 h-4" /> Download Key
+                      </button>
+                      <button
+                        onClick={() => { copyToClipboard(pendingPrivateKey.privateKey); }}
+                        className="px-4 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg text-sm font-medium transition-all flex items-center gap-2 border border-zinc-800"
+                      >
+                        <Copy className="w-4 h-4" /> Copy
+                      </button>
+                      <button
+                        onClick={() => setPendingPrivateKey(null)}
+                        className="px-4 py-2.5 text-zinc-500 hover:text-zinc-300 rounded-lg text-sm transition-all"
+                      >
+                        Done
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {!selectedVault ? (
+                <>
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <h2 className="text-lg font-semibold text-white">Machine Vaults</h2>
+                      <p className="text-xs text-zinc-500 mt-1">Programmatic secret access for services. TOTP-gated, TTL-scoped.</p>
+                    </div>
+                    <button
+                      onClick={() => setIsAddingVault(true)}
+                      className="bg-violet-600 hover:bg-violet-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all duration-150 flex items-center gap-2 shadow-lg shadow-violet-900/30"
+                    >
+                      <Plus className="w-4 h-4" /> New Vault
+                    </button>
+                  </div>
+
+                  {isAddingVault && (
+                    <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-6 shadow-xl">
+                      <div className="space-y-4">
+                        <div>
+                          <label className="text-xs text-zinc-500 uppercase tracking-wider font-medium">Name</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. database, api-gateway, proxy"
+                            value={newVault.name}
+                            onChange={e => setNewVault(prev => ({ ...prev, name: e.target.value.replace(/[^a-zA-Z0-9_-]/g, '') }))}
+                            className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 mt-1"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-zinc-500 uppercase tracking-wider font-medium">Description</label>
+                          <input
+                            type="text"
+                            placeholder="What service uses this vault?"
+                            value={newVault.description}
+                            onChange={e => setNewVault(prev => ({ ...prev, description: e.target.value }))}
+                            className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 mt-1"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-zinc-500 uppercase tracking-wider font-medium">TTL (seconds)</label>
+                          <input
+                            type="number"
+                            value={newVault.ttl}
+                            onChange={e => setNewVault(prev => ({ ...prev, ttl: e.target.value }))}
+                            className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-zinc-700 mt-1"
+                          />
+                          <p className="text-xs text-zinc-600 mt-1">{Math.floor(parseInt(newVault.ttl || "0") / 3600)}h {Math.floor((parseInt(newVault.ttl || "0") % 3600) / 60)}m</p>
+                        </div>
+                        <div className="flex gap-3 pt-2">
+                          <button onClick={createMachineVault} className="bg-violet-600 hover:bg-violet-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all">Create</button>
+                          <button onClick={() => { setIsAddingVault(false); setNewVault({ name: "", description: "", ttl: "14400" }); }} className="text-zinc-500 hover:text-zinc-300 px-4 py-2 rounded-lg text-sm transition-all">Cancel</button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="bg-zinc-950/50 border border-zinc-900 rounded-xl overflow-hidden shadow-2xl">
+                    <table className="w-full text-left text-sm">
+                      <thead className="bg-black/60 text-zinc-600 text-[10px] uppercase tracking-widest border-b border-zinc-900">
+                        <tr>
+                          <th className="px-6 py-4 font-medium">Vault</th>
+                          <th className="px-6 py-4 font-medium">TTL</th>
+                          <th className="px-6 py-4 font-medium">TOTP</th>
+                          <th className="px-6 py-4 font-medium">KEM</th>
+                          <th className="px-6 py-4 font-medium">Created</th>
+                          <th className="px-6 py-4 font-medium"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {machineVaults.map(vault => (
+                          <tr
+                            key={vault.id}
+                            onClick={() => { setSelectedVault(vault); fetchVaultSecrets(vault.id); }}
+                            className="hover:bg-zinc-900/40 transition-all duration-100 cursor-pointer border-b border-zinc-900/50"
+                          >
+                            <td className="px-6 py-4">
+                              <div className="text-zinc-200 font-medium">{vault.name}</div>
+                              {vault.description && <div className="text-xs text-zinc-600 mt-0.5">{vault.description}</div>}
+                            </td>
+                            <td className="px-6 py-4 text-zinc-400 font-mono text-xs">{Math.floor(vault.ttl / 3600)}h {Math.floor((vault.ttl % 3600) / 60)}m</td>
+                            <td className="px-6 py-4">
+                              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${vault.totp_enabled ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "bg-zinc-800 text-zinc-500 border border-zinc-700"}`}>
+                                {vault.totp_enabled ? "Active" : "Off"}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4">
+                              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${vault.has_kem_key ? "bg-violet-500/10 text-violet-400 border border-violet-500/20" : "bg-zinc-800 text-zinc-500 border border-zinc-700"}`}>
+                                {vault.has_kem_key ? "Set" : "None"}
+                              </span>
+                            </td>
+                            <td className="px-6 py-4 text-zinc-500 text-xs">{new Date(vault.created_at).toLocaleDateString()}</td>
+                            <td className="px-6 py-4">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); deleteMachineVault(vault.id); }}
+                                className="p-1.5 text-zinc-600 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-all"
+                                title="Delete vault"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                        {machineVaults.length === 0 && !isAddingVault && (
+                          <tr>
+                            <td colSpan={6} className="px-6 py-16 text-center text-zinc-500">
+                              <div className="flex flex-col items-center justify-center gap-3">
+                                <Hexagon className="w-8 h-8 text-zinc-700" />
+                                <p>No machine vaults. Create one to give a service programmatic secret access.</p>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => { setSelectedVault(null); setVaultSecrets([]); setIsAddingMachineSecret(false); }}
+                      className="p-2 text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 rounded-lg transition-all"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                    <div>
+                      <h2 className="text-lg font-semibold text-white">{selectedVault.name}</h2>
+                      {selectedVault.description && <p className="text-xs text-zinc-500">{selectedVault.description}</p>}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4">
+                      <p className="text-[10px] text-zinc-600 uppercase tracking-widest font-medium">TTL</p>
+                      <p className="text-zinc-200 font-mono text-sm mt-1">{Math.floor(selectedVault.ttl / 3600)}h {Math.floor((selectedVault.ttl % 3600) / 60)}m</p>
+                    </div>
+                    <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4">
+                      <p className="text-[10px] text-zinc-600 uppercase tracking-widest font-medium">TOTP</p>
+                      <p className={`text-sm font-medium mt-1 ${selectedVault.totp_enabled ? "text-emerald-400" : "text-zinc-500"}`}>
+                        {selectedVault.totp_enabled ? "Active" : "Not configured"}
+                      </p>
+                    </div>
+                    <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4">
+                      <p className="text-[10px] text-zinc-600 uppercase tracking-widest font-medium">KEM Key</p>
+                      <p className={`text-sm font-medium mt-1 ${selectedVault.has_kem_key ? "text-violet-400" : "text-zinc-500"}`}>
+                        {selectedVault.has_kem_key ? "Registered" : "Not set"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-between items-center">
+                    <h3 className="text-sm font-medium text-zinc-400">Secrets</h3>
+                    <button
+                      onClick={() => setIsAddingMachineSecret(true)}
+                      className="bg-violet-600 hover:bg-violet-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Add Secret
+                    </button>
+                  </div>
+
+                  {isAddingMachineSecret && (
+                    <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-5 shadow-xl">
+                      <div className="space-y-3">
+                        <div>
+                          <label className="text-xs text-zinc-500 uppercase tracking-wider font-medium">Key</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. DATABASE_URL, API_KEY"
+                            value={newMachineSecret.name}
+                            onChange={e => setNewMachineSecret(prev => ({ ...prev, name: e.target.value }))}
+                            className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 mt-1"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-zinc-500 uppercase tracking-wider font-medium">Value</label>
+                          <input
+                            type="password"
+                            placeholder="Secret value"
+                            value={newMachineSecret.value}
+                            onChange={e => setNewMachineSecret(prev => ({ ...prev, value: e.target.value }))}
+                            className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 mt-1 font-mono"
+                          />
+                        </div>
+                        <div className="flex gap-3 pt-1">
+                          <button onClick={addMachineSecret} className="bg-violet-600 hover:bg-violet-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all">Add</button>
+                          <button onClick={() => { setIsAddingMachineSecret(false); setNewMachineSecret({ name: "", value: "" }); }} className="text-zinc-500 hover:text-zinc-300 px-4 py-2 rounded-lg text-sm transition-all">Cancel</button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="bg-zinc-950/50 border border-zinc-900 rounded-xl overflow-hidden shadow-2xl">
+                    <table className="w-full text-left text-sm">
+                      <thead className="bg-black/60 text-zinc-600 text-[10px] uppercase tracking-widest border-b border-zinc-900">
+                        <tr>
+                          <th className="px-6 py-4 font-medium">Key</th>
+                          <th className="px-6 py-4 font-medium">Added</th>
+                          <th className="px-6 py-4 font-medium"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {vaultSecrets.map(secret => (
+                          <tr key={secret.id} className="hover:bg-zinc-900/40 transition-all duration-100 border-b border-zinc-900/50">
+                            <td className="px-6 py-4 text-zinc-200 font-mono text-xs">{secret.name}</td>
+                            <td className="px-6 py-4 text-zinc-500 text-xs">{new Date(secret.created_at).toLocaleDateString()}</td>
+                            <td className="px-6 py-4">
+                              <button
+                                onClick={() => deleteMachineSecret(secret.id)}
+                                className="p-1.5 text-zinc-600 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-all"
+                                title="Delete secret"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                        {vaultSecrets.length === 0 && !isAddingMachineSecret && (
+                          <tr>
+                            <td colSpan={3} className="px-6 py-12 text-center text-zinc-500">
+                              <div className="flex flex-col items-center justify-center gap-3">
+                                <Key className="w-6 h-6 text-zinc-700" />
+                                <p>No secrets in this vault yet.</p>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
             </motion.div>
           )}
 

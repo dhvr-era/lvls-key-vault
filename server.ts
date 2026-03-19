@@ -407,8 +407,8 @@ app.post("/api/auth/setup", requireAuth(3), async (req, res) => {
     return res.status(400).json({ error: "level, credential, and method are required" });
   }
   if (level < 0 || level > 3) return res.status(400).json({ error: "Invalid level" });
-  // You must be authenticated at the target level (or higher security) to change its credential
-  if ((req as any).authLevel > level) {
+  // You must be authenticated at the target level or a more secure level (lower number = more secure)
+  if ((req as any).authLevel < level) {
     return res.status(403).json({ error: "You must unlock this level before changing its credential" });
   }
 
@@ -753,8 +753,8 @@ app.post("/api/machine/vaults", requireAuth(3), (req, res) => {
   const id = crypto.randomUUID();
   try {
     db.prepare("INSERT INTO machine_vaults (id, name, description, ttl) VALUES (?, ?, ?, ?)")
-      .run(id, name.toLowerCase(), description || null, ttlVal);
-    res.json({ id, name: name.toLowerCase(), description: description || null, ttl: ttlVal });
+      .run(id, name, description || null, ttlVal);
+    res.json({ id, name, description: description || null, ttl: ttlVal });
   } catch (err: any) {
     if (err.message?.includes("UNIQUE")) return res.status(409).json({ error: "Vault name already exists" });
     res.status(500).json({ error: "Failed to create vault" });
