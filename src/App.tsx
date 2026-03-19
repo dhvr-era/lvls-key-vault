@@ -1125,24 +1125,32 @@ export default function App() {
   const createMachineVault = async () => {
     if (!newVault.name) return;
     try {
-      // 1. Create the vault
+      // 1. Generate ML-KEM-768 keypair first (fail early before creating vault)
+      const kemPair = await generateKemKeyPair();
+
+      // 2. Create the vault
       const res = await fetch("/api/machine/vaults", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}) },
         body: JSON.stringify({ name: newVault.name, description: newVault.description || null, ttl: parseInt(newVault.ttl) || 14400 }),
       });
-      if (!res.ok) return;
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(`Failed to create vault: ${err.error || res.statusText}`);
+        return;
+      }
       const vault = await res.json();
 
-      // 2. Generate ML-KEM-768 keypair
-      const kemPair = await generateKemKeyPair();
-
       // 3. Register public key with the vault
-      await fetch(`/api/machine/vaults/${vault.id}/kem-key`, {
+      const kemRes = await fetch(`/api/machine/vaults/${vault.id}/kem-key`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}) },
         body: JSON.stringify({ kem_public_key: kemPair.publicKey }),
       });
+      if (!kemRes.ok) {
+        alert("Vault created but KEM key registration failed. Check console.");
+        console.error("KEM key registration failed:", await kemRes.text());
+      }
 
       // 4. Show private key for download (one-time)
       setPendingPrivateKey({ vaultName: newVault.name, privateKey: kemPair.privateKey });
@@ -1150,7 +1158,8 @@ export default function App() {
       setIsAddingVault(false);
       fetchMachineVaults();
     } catch (error) {
-      console.error("Failed to create vault", error);
+      console.error("Failed to create vault:", error);
+      alert(`Vault creation error: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
