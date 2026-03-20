@@ -55,10 +55,10 @@ Credential → Argon2id (memoryCost: 64MB, timeCost: 3, parallelism: 1) → stor
 
 ### TOTP Secrets (at rest)
 
-TOTP secrets are encrypted before storage using AES-256-GCM with a key derived from `JWT_SECRET`:
+TOTP secrets are encrypted before storage using AES-256-GCM with a key derived from the dedicated `TOTP_ENC_SECRET` env var (required at startup — server refuses to start if unset):
 
 ```
-HMAC-SHA256(JWT_SECRET, "lvls-totp-enc-v1") → 32-byte encryption key
+HMAC-SHA256(TOTP_ENC_SECRET, "lvls-totp-enc-v1") → 32-byte encryption key
 AES-256-GCM.encrypt(totp_base32_secret) → stored in auth_config
 ```
 
@@ -81,7 +81,7 @@ AES-256-GCM.encrypt(totp_base32_secret) → stored in auth_config
 | Auto-lock | Client-side: wipes session + KEM keys from memory after 5 min inactivity |
 | Token revocation | Server-side JWT invalidation on logout |
 | Server binding | `127.0.0.1` only — not reachable from LAN |
-| TLS | HTTPS with HSTS (`max-age=31536000`) when certs present |
+| TLS | HTTPS with HSTS (`max-age=31536000`) when certs present; refuses to start without certs unless `LVLS_ALLOW_HTTP=true` is explicitly set |
 | Security headers | `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` |
 | CORS | Restricted to localhost + optionally one specific extension ID |
 | Input validation | Level params validated with `/^[0-3]$/` regex; UUIDs server-generated |
@@ -94,8 +94,9 @@ AES-256-GCM.encrypt(totp_base32_secret) → stored in auth_config
 
 | Key | Location | Protection |
 |-----|----------|-----------|
-| JWT_SECRET | `.env` file (server) | Never exposed to client |
-| TOTP enc key | Derived at runtime from JWT_SECRET | Never stored |
+| JWT_SECRET | `.env` file (server) | Required at startup; never exposed to client |
+| TOTP_ENC_SECRET | `.env` file (server) | Required at startup; independent of JWT_SECRET |
+| TOTP enc key | Derived at runtime from `TOTP_ENC_SECRET` | Never stored |
 | ML-KEM private key | localStorage (encrypted) | AES-GCM + PBKDF2(credential) |
 | ML-KEM public key | Server DB | Not secret |
 | Credential hash | Server DB | Argon2id, not reversible |
@@ -109,7 +110,7 @@ AES-256-GCM.encrypt(totp_base32_secret) → stored in auth_config
 | HTTPS cert | Self-signed by default. Use [mkcert](https://github.com/FiloSottile/mkcert) for trusted local cert |
 | localStorage | ML-KEM private keys stored encrypted in browser localStorage. XSS on localhost could access this |
 | No FIDO2 | Hardware security key UI exists but is not yet implemented |
-| No backup | No encrypted export yet — DB loss = permanent data loss |
+| Backup passphrase | Encrypted backup/restore implemented. Backup bundle is passphrase-protected (AES-256-GCM). Loss of passphrase = unrecoverable backup |
 | TOTP window | ±1 30-second window allowed to tolerate clock drift |
 | SQLite | Single-file DB, no replication. Suitable for personal use |
 

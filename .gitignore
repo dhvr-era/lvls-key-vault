@@ -37,6 +37,8 @@ betterleaks.exe
 betterleaks
 
 # Internal docs — audit reports, planning, and client scripts with infra details
+# docs/ contains TLP:AMBER classified content — never push
+docs/
 AUDIT-*.md
 *-security-audit.md
 implementation_plan.md

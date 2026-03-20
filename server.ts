@@ -16,17 +16,17 @@ app.disable("x-powered-by");
 app.set("trust proxy", false);
 const PORT = parseInt(process.env.PORT || "5000", 10);
 if (!process.env.JWT_SECRET) {
-  console.warn("[SECURITY] JWT_SECRET env var not set — using ephemeral random secret. All sessions will be invalidated on restart. Set JWT_SECRET in production.");
+  console.error("[SECURITY] JWT_SECRET is not set — refusing to start. Set a stable random secret in .env to preserve sessions across restarts.");
+  process.exit(1);
 }
-const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString("hex");
+const JWT_SECRET = process.env.JWT_SECRET;
 
 // ── M2: TOTP-at-rest encryption — dedicated secret, independent of JWT_SECRET ──
 if (!process.env.TOTP_ENC_SECRET) {
-  console.warn("[SECURITY] TOTP_ENC_SECRET not set — deriving from JWT_SECRET. Set a dedicated TOTP_ENC_SECRET in production.");
+  console.error("[SECURITY] TOTP_ENC_SECRET is not set — refusing to start. TOTP secrets would become unrecoverable if JWT_SECRET ever rotates. Set a dedicated TOTP_ENC_SECRET in .env.");
+  process.exit(1);
 }
-const TOTP_ENC_KEY = process.env.TOTP_ENC_SECRET
-  ? crypto.createHmac("sha256", process.env.TOTP_ENC_SECRET).update("lvls-totp-enc-v1").digest()
-  : crypto.createHmac("sha256", JWT_SECRET).update("lvls-totp-enc-v1").digest();
+const TOTP_ENC_KEY = crypto.createHmac("sha256", process.env.TOTP_ENC_SECRET).update("lvls-totp-enc-v1").digest();
 function encryptTotp(secret: string): string {
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv("aes-256-gcm", TOTP_ENC_KEY, iv);
@@ -140,7 +140,7 @@ if (!process.env.LVLS_DB_KEY) {
   process.exit(1);
 }
 const db = new Database("lvls.db");
-db.pragma(`key='${process.env.LVLS_DB_KEY}'`);
+db.pragma(`key='${process.env.LVLS_DB_KEY!.replace(/'/g, "''")}'`);
 db.pragma("journal_mode = WAL");
 
 db.exec(`
@@ -1558,9 +1558,14 @@ app.post("/api/vault/restore", requireAuth(0), (req, res) => {
 // ---------- Vault: Nuke (wipe everything) ----------
 app.delete("/api/vault/nuke", requireAuth(0), (req, res) => {
   try {
-    db.exec("DELETE FROM secrets");
-    db.exec("DELETE FROM session_logs");
-    db.exec("DELETE FROM auth_config");
+    db.transaction(() => {
+      db.exec("DELETE FROM secrets");
+      db.exec("DELETE FROM session_logs");
+      db.exec("DELETE FROM auth_config");
+      db.exec("DELETE FROM vault_grants");
+      db.exec("DELETE FROM machine_vaults"); // CASCADE removes machine_secrets
+      db.exec("DELETE FROM machine_identities");
+    })();
     console.warn("[NUKE] Vault wiped at", new Date().toISOString());
     res.json({ success: true });
   } catch (err) {
@@ -1627,11 +1632,16 @@ async function startServer() {
     https.createServer(tls, app).listen(PORT, HOST, () => {
       console.log(`\x1b[32m[TLS]\x1b[0m lvls running on \x1b[1mhttps://${HOST}:${PORT}\x1b[0m`);
     });
-  } else {
-    console.warn("\x1b[33m[SECURITY]\x1b[0m No TLS certificates found — running HTTP.");
+  } else if (process.env.LVLS_ALLOW_HTTP === "true") {
+    console.warn("\x1b[33m[SECURITY]\x1b[0m No TLS certificates found — running HTTP (LVLS_ALLOW_HTTP=true). Do not use in production.");
     http.createServer(app).listen(PORT, HOST, () => {
       console.log(`lvls running on http://${HOST}:${PORT} (no TLS — localhost only)`);
     });
+  } else {
+    console.error("[SECURITY] No TLS certificates found and LVLS_ALLOW_HTTP is not set — refusing to start.");
+    console.error("  • Generate certs: see docs/tls.md");
+    console.error("  • Or set LVLS_ALLOW_HTTP=true to explicitly allow plaintext HTTP (dev/localhost only).");
+    process.exit(1);
   }
 }
 
