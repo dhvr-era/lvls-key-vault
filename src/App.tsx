@@ -25,6 +25,11 @@ import {
   User,
   Folder,
   FolderOpen,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  Upload,
 } from "lucide-react";
 
 // ---------- Helpers ----------
@@ -300,6 +305,155 @@ function AuthModal({ authLevel, targetLevel, totpStatus, configuredLevels, authI
 }
 
 // ---------- Nuke Vault Component ----------
+function BackupRestore({ authLevel, sessionToken }: { authLevel: number; sessionToken: string | null }) {
+  const [exportPassphrase, setExportPassphrase] = React.useState("");
+  const [restoreBundle, setRestoreBundle]       = React.useState<string | null>(null);
+  const [restorePassphrase, setRestorePassphrase] = React.useState("");
+  const [confirmRestore, setConfirmRestore]     = React.useState(false);
+  const [loading, setLoading]                   = React.useState<"export" | "restore" | null>(null);
+  const [status, setStatus]                     = React.useState<{ type: "success" | "error"; msg: string } | null>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const isUnlocked = authLevel <= 0;
+
+  const handleExport = async () => {
+    setLoading("export"); setStatus(null);
+    try {
+      const res  = await fetch("/api/vault/backup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionToken}` },
+        body: JSON.stringify({ passphrase: exportPassphrase }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Backup failed");
+      const blob = new Blob([data.bundle], { type: "application/octet-stream" });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href     = url;
+      a.download = `lvls-backup-${new Date().toISOString().slice(0, 10)}.lvls`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setExportPassphrase("");
+      setStatus({ type: "success", msg: "Backup downloaded." });
+    } catch (e: any) {
+      setStatus({ type: "error", msg: e.message });
+    } finally { setLoading(null); }
+  };
+
+  const handleFileLoad = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => setRestoreBundle((ev.target?.result as string).trim());
+    reader.readAsText(file);
+  };
+
+  const handleRestore = async () => {
+    setLoading("restore"); setStatus(null);
+    try {
+      const res  = await fetch("/api/vault/restore", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${sessionToken}` },
+        body: JSON.stringify({ bundle: restoreBundle, passphrase: restorePassphrase }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Restore failed");
+      setStatus({ type: "success", msg: `Restored: ${data.stats.secrets} secrets, ${data.stats.vaults} machine vaults.` });
+      setRestoreBundle(null); setRestorePassphrase(""); setConfirmRestore(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } catch (e: any) {
+      setStatus({ type: "error", msg: e.message });
+    } finally { setLoading(null); }
+  };
+
+  if (!isUnlocked) {
+    return (
+      <div className="flex items-center gap-3 bg-zinc-900/50 border border-zinc-800/80 px-4 py-3.5 rounded-xl">
+        <Lock className="w-4 h-4 text-zinc-500 shrink-0" />
+        <p className="text-xs text-zinc-500">Unlock <span className="text-zinc-300 font-medium">lvl0</span> to access backup &amp; restore.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* Export */}
+      <div className="bg-zinc-900/50 border border-zinc-800/80 rounded-xl p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <Download className="w-4 h-4 text-violet-400 shrink-0" />
+          <p className="text-sm font-medium text-zinc-200">Export encrypted backup</p>
+        </div>
+        <p className="text-xs text-zinc-500">All secrets, auth config, and machine vaults — AES-256-GCM encrypted. Store the passphrase separately; it cannot be recovered.</p>
+        <input
+          type="password"
+          value={exportPassphrase}
+          onChange={e => setExportPassphrase(e.target.value)}
+          placeholder="Backup passphrase (min 12 chars)"
+          className="w-full bg-zinc-800/60 border border-zinc-700/60 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-violet-600/60"
+        />
+        <button
+          onClick={handleExport}
+          disabled={!!loading || exportPassphrase.length < 12}
+          className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
+        >
+          <Download className="w-3.5 h-3.5" />
+          {loading === "export" ? "Encrypting…" : "Download backup"}
+        </button>
+      </div>
+
+      {/* Restore */}
+      <div className="bg-zinc-900/50 border border-zinc-800/80 rounded-xl p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <Upload className="w-4 h-4 text-amber-400 shrink-0" />
+          <p className="text-sm font-medium text-zinc-200">Restore from backup</p>
+        </div>
+        <p className="text-xs text-zinc-500">Overwrites all current vault data. Cannot be undone.</p>
+        <input ref={fileInputRef} type="file" accept=".lvls" onChange={handleFileLoad}
+          className="block w-full text-xs text-zinc-400 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-medium file:bg-zinc-800 file:text-zinc-300 hover:file:bg-zinc-700 cursor-pointer"
+        />
+        {restoreBundle && (
+          <>
+            <input
+              type="password"
+              value={restorePassphrase}
+              onChange={e => setRestorePassphrase(e.target.value)}
+              placeholder="Backup passphrase"
+              className="w-full bg-zinc-800/60 border border-zinc-700/60 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-amber-600/60"
+            />
+            {!confirmRestore ? (
+              <button
+                onClick={() => setConfirmRestore(true)}
+                disabled={!restorePassphrase}
+                className="flex items-center gap-2 px-4 py-2 bg-amber-700 hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                Restore vault
+              </button>
+            ) : (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleRestore}
+                  disabled={!!loading}
+                  className="flex items-center gap-2 px-4 py-2 bg-rose-700 hover:bg-rose-600 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
+                >
+                  {loading === "restore" ? "Restoring…" : "Confirm overwrite"}
+                </button>
+                <button onClick={() => setConfirmRestore(false)} className="px-3 py-2 text-zinc-400 hover:text-white border border-zinc-800 rounded-lg text-sm transition-colors">
+                  Cancel
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {status && (
+        <p className={`text-xs px-1 ${status.type === "success" ? "text-emerald-400" : "text-rose-400"}`}>{status.msg}</p>
+      )}
+    </div>
+  );
+}
+
 function NukeVault() {
   const [phase, setPhase] = React.useState<"idle" | "confirm" | "nuking" | "done">("idle");
   const [confirmText, setConfirmText] = React.useState("");
@@ -944,14 +1098,14 @@ export default function App() {
 
   // Machine Vaults state
   interface MachineVault { id: string; name: string; description: string | null; ttl: number; totp_enabled: number; has_kem_key: number; created_at: string; secret_count?: number; }
-  interface MachineSecret { id: string; name: string; created_at: string; }
+  interface MachineSecret { id: string; name: string; classification: string; created_at: string; }
   const [machineVaults, setMachineVaults] = useState<MachineVault[]>([]);
   const [selectedVault, setSelectedVault] = useState<MachineVault | null>(null);
   const [vaultSecrets, setVaultSecrets] = useState<MachineSecret[]>([]);
   const [isAddingVault, setIsAddingVault] = useState(false);
   const [isAddingMachineSecret, setIsAddingMachineSecret] = useState(false);
   const [newVault, setNewVault] = useState({ name: "", description: "", ttl: "14400" });
-  const [newMachineSecret, setNewMachineSecret] = useState({ name: "", value: "" });
+  const [newMachineSecret, setNewMachineSecret] = useState({ name: "", value: "", classification: "cached" });
   const [pendingPrivateKey, setPendingPrivateKey] = useState<{ vaultName: string; privateKey: string } | null>(null);
   
   // Vault setup gate — null=loading, false=needs onboarding, true=configured
@@ -997,6 +1151,19 @@ export default function App() {
   const [showLevelCol, setShowLevelCol] = useState(false);
   const [lvlDropdownOpen, setLvlDropdownOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const createRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!createOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (createRef.current && !createRef.current.contains(e.target as Node)) setCreateOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [createOpen]);
 
   // KEM private keys held in memory after unlock — never stored unencrypted
   const [kemPrivateKeys, setKemPrivateKeys] = useState<Record<number, string>>({});
@@ -1181,29 +1348,119 @@ export default function App() {
   const addMachineSecret = async () => {
     if (!selectedVault || !newMachineSecret.name || !newMachineSecret.value) return;
     try {
-      // Fetch vault's public key
-      const kemRes = await fetch(`/api/machine/vaults/${selectedVault.id}/kem-key`, {
-        headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
-      });
-      if (!kemRes.ok) { console.error("Vault has no KEM key"); return; }
-      const { kem_public_key } = await kemRes.json();
+      let secretValue = newMachineSecret.value;
 
-      // Hybrid encrypt: ML-KEM-768 + AES-256-GCM
-      const encrypted = await hybridEncrypt(newMachineSecret.value, kem_public_key);
-      const encryptedValue = JSON.stringify(encrypted);
+      if (newMachineSecret.classification === "blind") {
+        // Blind: encrypt with ML-KEM in browser — server never sees plaintext
+        const kemRes = await fetch(`/api/machine/vaults/${selectedVault.id}/kem-key`, {
+          headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
+        });
+        if (!kemRes.ok) { alert("This vault has no ML-KEM public key registered. Re-create the vault to generate one."); return; }
+        const { kem_public_key } = await kemRes.json();
+        if (!kem_public_key) { alert("This vault has no ML-KEM public key registered. Re-create the vault to generate one."); return; }
+        const encrypted = await hybridEncrypt(newMachineSecret.value, kem_public_key);
+        secretValue = JSON.stringify(encrypted);
+      }
+      // Cached: send plaintext over TLS — server encrypts with AES-256-GCM and serves plaintext on lease
 
       const res = await fetch(`/api/machine/vaults/${selectedVault.id}/secrets`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}) },
-        body: JSON.stringify({ name: newMachineSecret.name, encrypted_value: encryptedValue }),
+        body: JSON.stringify({ name: newMachineSecret.name, encrypted_value: secretValue, classification: newMachineSecret.classification }),
       });
       if (res.ok) {
-        setNewMachineSecret({ name: "", value: "" });
+        setNewMachineSecret({ name: "", value: "", classification: "cached" });
         setIsAddingMachineSecret(false);
         fetchVaultSecrets(selectedVault.id);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Failed to add secret");
       }
     } catch (error) {
       console.error("Failed to add secret", error);
+      alert("Failed to add secret — check console for details");
+    }
+  };
+
+  const savePrivateKeyToLvl2 = async () => {
+    if (!pendingPrivateKey) return;
+    if (authLevel > 2) {
+      alert("Unlock Lvl 2 first — authenticate at Lvl 2 in the main vault, then come back to create the machine vault.");
+      return;
+    }
+    const credential = sessionCredentials[2];
+    if (!credential) {
+      alert("Lvl 2 credential not in session. Re-authenticate at Lvl 2.");
+      return;
+    }
+    try {
+      let publicKeyB64: string | undefined;
+      try {
+        const kemRes = await fetch("/api/auth/kem-public-key/2", {
+          headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
+        });
+        if (kemRes.ok) publicKeyB64 = (await kemRes.json()).publicKey;
+      } catch { /* fall back to AES-only */ }
+
+      const secretName = `${pendingPrivateKey.vaultName}-private-key`;
+      const encryptedValue = await encryptForLevel(pendingPrivateKey.privateKey, 2, credential, publicKeyB64);
+
+      const res = await fetch("/api/secrets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}) },
+        body: JSON.stringify({
+          id: crypto.randomUUID(),
+          name: secretName,
+          level: 2,
+          secret_type: "custom",
+          encrypted_value: encryptedValue,
+          tags: ["kem-private-key", "vault-key"],
+          expiry: null,
+          url: null,
+          username: null,
+          folder: "Vault Keys",
+        }),
+      });
+      if (res.ok) {
+        alert(`Saved to Lvl 2 as "${secretName}" in folder "Vault Keys"`);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Failed to save to Lvl 2");
+      }
+    } catch (error) {
+      console.error("Failed to save private key to Lvl 2", error);
+      alert("Failed to save — check console for details");
+    }
+  };
+
+  const issueOfflineToken = async (vaultId: string) => {
+    const machineId = prompt("Machine ID to issue offline token for:");
+    if (!machineId?.trim()) return;
+    const ttlHours = prompt("TTL in hours (default: 24):", "24");
+    const ttlSeconds = Math.max(300, Math.min(604800, parseInt(ttlHours || "24", 10) * 3600));
+    try {
+      const res = await fetch(`/api/admin/machine/vaults/${vaultId}/offline-token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}) },
+        body: JSON.stringify({ machine_id: machineId.trim(), ttl_seconds: ttlSeconds }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        alert(`Failed: ${err.error}`);
+        return;
+      }
+      const token = await res.json();
+      // Download as JSON file
+      const blob = new Blob([JSON.stringify(token, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `lvls-offline-token-${machineId.trim()}-${vaultId.slice(0, 8)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error("Failed to issue offline token", error);
+      alert("Failed to issue offline token. Check console.");
     }
   };
 
@@ -1522,7 +1779,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-black text-zinc-300 font-sans flex">
+    <div className="min-h-screen bg-black text-zinc-300 font-sans flex flex-col">
       <AnimatePresence>
         {showAuthModal && (
         <AuthModal
@@ -1544,99 +1801,137 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Sidebar */}
-      <div className="w-64 bg-black flex flex-col z-10">
-        <div className="h-16 bg-black flex items-center justify-center border-b border-zinc-900">
+      {/* Top ribbon — full width */}
+      <header className="h-14 border-b border-zinc-800/50 relative flex items-center px-4 bg-black shrink-0 z-20">
+        {/* Left: logo with spacing */}
+        <button onClick={() => setSidebarOpen(o => !o)} className="shrink-0 flex items-center ml-12">
           <img src="/logo.png" alt="lvls" className="h-10 w-auto object-contain" />
+        </button>
+        <div className="flex-1" />
+        {/* Right: search + settings + create */}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
+            <button onClick={() => setSearchOpen(o => !o)} className="p-1.5 text-zinc-400 hover:text-violet-300 hover:bg-violet-900/30 rounded-lg transition-colors">
+              <Search className="w-4 h-4" />
+            </button>
+            <div className={`overflow-hidden transition-[width,opacity] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] ${searchOpen ? "w-48 opacity-100" : "w-0 opacity-0"}`}>
+              <input
+                autoFocus={searchOpen}
+                type="text"
+                placeholder="Search…"
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                onBlur={() => { if (!searchQuery) setSearchOpen(false); }}
+                className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-sm text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-violet-700 w-48"
+              />
+            </div>
+          </div>
+          <button onClick={() => setShowSettings(true)} className="p-1.5 text-zinc-400 hover:text-violet-300 hover:bg-violet-900/30 rounded-lg transition-colors" title="Settings">
+            <Settings className="w-4 h-4" />
+          </button>
+          <div className="relative" ref={createRef}>
+            <button
+              onClick={() => setCreateOpen(o => !o)}
+              className="flex items-center gap-1.5 bg-violet-700 hover:bg-violet-600 active:bg-violet-800 text-white px-3 py-1.5 rounded-lg text-sm font-medium transition-colors select-none"
+            >
+              Create <Plus className="w-3.5 h-3.5" />
+            </button>
+            {createOpen && (
+              <div className="absolute right-0 top-full mt-1.5 w-44 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl z-50 overflow-hidden">
+                <button
+                  onClick={() => { setActiveTab("vault"); setIsAdding(true); setCreateOpen(false); }}
+                  className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-zinc-300 hover:bg-violet-900/40 hover:text-violet-200 transition-colors"
+                >
+                  <Key className="w-3.5 h-3.5 text-violet-400" /> Secret
+                </button>
+                <div className="h-px bg-zinc-800 mx-3" />
+                <button
+                  onClick={() => { setActiveTab("machines"); fetchMachineVaults(); setTimeout(() => setIsAddingVault(true), 100); setCreateOpen(false); }}
+                  className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-zinc-300 hover:bg-violet-900/40 hover:text-violet-200 transition-colors"
+                >
+                  <Hexagon className="w-3.5 h-3.5 text-violet-400" /> Vault
+                </button>
+              </div>
+            )}
+          </div>
         </div>
+      </header>
 
-        <nav className="flex-1 px-3 py-4 space-y-1">
+      {/* Body: sidebar + main content */}
+      <div className="flex flex-1 overflow-hidden">
+
+      {/* Sidebar */}
+      <div data-sidebar className={`${sidebarOpen ? "w-56" : "w-14"} shrink-0 bg-black flex flex-col z-10 transition-[width] duration-[350ms] ease-[cubic-bezier(0.16,1,0.3,1)]`}>
+        <nav className="flex-1 px-2 py-4 space-y-1 overflow-hidden">
           <button
             onClick={() => setActiveTab("vault")}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 ${activeTab === "vault" ? "bg-zinc-900 text-violet-400 border border-zinc-800" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/60"}`}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150 ${activeTab === "vault" ? "bg-violet-900/40 text-violet-200 border border-violet-700/50" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/60"}`}
           >
-            <Key className="w-4 h-4 shrink-0" /> Secrets
+            <Key className="w-4 h-4 shrink-0" />
+            <span className={`whitespace-nowrap transition-[opacity,transform] duration-[250ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${sidebarOpen ? "opacity-100 translate-x-0" : "opacity-0 -translate-x-2 pointer-events-none"}`}>Secrets</span>
           </button>
           <button
             onClick={() => { setActiveTab("machines"); fetchMachineVaults(); }}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 ${activeTab === "machines" ? "bg-zinc-900 text-violet-400 border border-zinc-800" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/60"}`}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150 ${activeTab === "machines" ? "bg-violet-900/40 text-violet-200 border border-violet-700/50" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/60"}`}
           >
-            <Hexagon className="w-4 h-4 shrink-0" /> Machine Vaults
+            <Hexagon className="w-4 h-4 shrink-0" />
+            <span className={`whitespace-nowrap transition-[opacity,transform] duration-[250ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${sidebarOpen ? "opacity-100 translate-x-0" : "opacity-0 -translate-x-2 pointer-events-none"}`}>Machine Vaults</span>
           </button>
           <button
             onClick={() => setActiveTab("logs")}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150 ${activeTab === "logs" ? "bg-zinc-900 text-violet-400 border border-zinc-800" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/60"}`}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors duration-150 ${activeTab === "logs" ? "bg-violet-900/40 text-violet-200 border border-violet-700/50" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/60"}`}
           >
-            <Activity className="w-4 h-4 shrink-0" /> Session Logs
+            <Activity className="w-4 h-4 shrink-0" />
+            <span className={`whitespace-nowrap transition-[opacity,transform] duration-[250ms] ease-[cubic-bezier(0.16,1,0.3,1)] ${sidebarOpen ? "opacity-100 translate-x-0" : "opacity-0 -translate-x-2 pointer-events-none"}`}>Session Logs</span>
           </button>
         </nav>
 
-        <div className="px-4 py-4 flex items-center justify-between bg-black">
-          <LevelSelector
-            currentLevel={viewLevel}
-            onChange={(l) => {
-              // l=0 means standby (s) — keep current view, do nothing
-              if (l === 0) return;
-              setViewLevel(l);
-              const neededAuthLevel = 4 - l;
-              if (authLevel > neededAuthLevel) {
-                // Need higher clearance — ask for credential
-                setPendingAuthLevel(neededAuthLevel);
+        <div className="px-3 py-3 border-t border-zinc-800 flex flex-col gap-2">
+
+          <div className="flex items-center justify-between">
+            <LevelSelector
+              currentLevel={viewLevel}
+              onChange={(l) => {
+                // l=0 means standby (s) — keep current view, do nothing
+                if (l === 0) return;
+                setViewLevel(l);
+                const neededAuthLevel = 4 - l;
+                if (authLevel > neededAuthLevel) {
+                  // Need higher clearance — ask for credential
+                  setPendingAuthLevel(neededAuthLevel);
+                  setShowAuthModal(true);
+                } else {
+                  // Already cleared — just switch view, no auth needed
+                  setVaultLevelFilter([neededAuthLevel]);
+                }
+              }}
+            />
+            <button
+              onClick={async () => {
+                // M1: Revoke token server-side before clearing locally
+                if (sessionToken) {
+                  fetch("/api/auth/logout", { method: "POST", headers: { Authorization: `Bearer ${sessionToken}` } }).catch(() => {});
+                }
+                setAuthLevel(4);
+                setViewLevel(0);
+                setSessionToken(null);
+                setSessionCredentials({});
+                setKemPrivateKeys({});
+                setRevealedSecrets(new Set());
+                setRevealedValues({});
                 setShowAuthModal(true);
-              } else {
-                // Already cleared — just switch view, no auth needed
-                setVaultLevelFilter([neededAuthLevel]);
-              }
-            }}
-          />
-          <button
-            onClick={async () => {
-              // M1: Revoke token server-side before clearing locally
-              if (sessionToken) {
-                fetch("/api/auth/logout", { method: "POST", headers: { Authorization: `Bearer ${sessionToken}` } }).catch(() => {});
-              }
-              setAuthLevel(4);
-              setViewLevel(0);
-              setSessionToken(null);
-              setSessionCredentials({});
-              setKemPrivateKeys({});
-              setRevealedSecrets(new Set());
-              setRevealedValues({});
-              setShowAuthModal(true);
-            }}
-            className="p-2 text-zinc-600 hover:text-violet-400 hover:bg-zinc-900 rounded-lg transition-all duration-150"
-            title="Lock lvl"
-          >
-            <Lock className="w-5 h-5" />
-          </button>
+              }}
+              className="p-2 text-zinc-600 hover:text-violet-400 hover:bg-zinc-900 rounded-lg transition-all duration-150"
+              title="Lock lvl"
+            >
+              <Lock className="w-5 h-5" />
+            </button>
+          </div>
         </div>
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col h-screen overflow-hidden">
-        <header className="h-16 border-b border-zinc-900 flex items-center justify-end px-6 bg-black/80 backdrop-blur-md shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600" />
-              <input
-                type="text"
-                placeholder="Search secrets…"
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                className="bg-zinc-950 border border-zinc-800/80 rounded-lg pl-8 pr-3 py-1.5 text-xs text-zinc-300 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 focus:bg-zinc-900 transition-all w-48 focus:w-64"
-              />
-            </div>
-            <div className="w-px h-5 bg-zinc-800" />
-            <button
-              onClick={() => setShowSettings(true)}
-              className="p-1.5 text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 rounded-lg transition-all"
-              title="Settings"
-            >
-              <Settings className="w-4 h-4" />
-            </button>
-          </div>
-        </header>
-
+      <div className="flex-1 flex flex-col overflow-hidden">
         <main className="flex-1 overflow-y-auto p-6 w-full">
           {activeTab === "vault" && (
             <motion.div
@@ -1645,20 +1940,12 @@ export default function App() {
               transition={{ duration: 0.25, ease: "easeOut" }}
               className="w-full space-y-6"
             >
-              <div className="flex justify-end items-center gap-4">
-                <button
-                  onClick={() => setIsAdding(true)}
-                  className="bg-violet-600 hover:bg-violet-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all duration-150 flex items-center gap-2 shrink-0 shadow-lg shadow-violet-900/30"
-                >
-                  <Plus className="w-4 h-4" /> Add Secret
-                </button>
-              </div>
-
               {isAdding && (
                 <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-6 mb-6 shadow-xl">
-                  <h3 className="text-white font-medium mb-4">
-                    Add New Secret
-                  </h3>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-white font-medium">Add New Secret</h3>
+                    <button onClick={() => setIsAdding(false)} className="p-1.5 text-zinc-500 hover:text-white hover:bg-zinc-800 rounded-lg transition-all"><X className="w-4 h-4" /></button>
+                  </div>
                   <form onSubmit={handleAddSecret} className="space-y-4">
                     <div className="grid grid-cols-2 gap-4">
                       <div>
@@ -1848,8 +2135,8 @@ export default function App() {
               )}
 
               <div className="bg-zinc-950/50 border border-zinc-900 rounded-xl overflow-hidden shadow-2xl">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-black/60 text-zinc-600 text-[10px] uppercase tracking-widest border-b border-zinc-900">
+                <table className="w-full text-left text-base">
+                  <thead className="bg-black/60 text-zinc-400 text-xs uppercase tracking-widest border-b border-zinc-900">
                     <tr>
                       <th className="px-5 py-3 font-medium">Identifier</th>
                       <th className="px-5 py-3 font-medium">Value</th>
@@ -2134,8 +2421,8 @@ export default function App() {
               className="w-full space-y-6"
             >
               <div className="bg-zinc-950/50 border border-zinc-900 rounded-xl overflow-hidden shadow-2xl">
-                <table className="w-full text-left text-sm">
-                  <thead className="bg-black/60 text-zinc-600 text-[10px] uppercase tracking-widest border-b border-zinc-900">
+                <table className="w-full text-left text-base">
+                  <thead className="bg-black/60 text-zinc-400 text-xs uppercase tracking-widest border-b border-zinc-900">
                     <tr>
                       <th className="px-6 py-4 font-medium">Time</th>
                       <th className="px-6 py-4 font-medium">Action</th>
@@ -2216,33 +2503,41 @@ export default function App() {
                     <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-3 mb-6 max-h-24 overflow-y-auto">
                       <code className="text-xs text-zinc-500 break-all font-mono">{pendingPrivateKey.privateKey.slice(0, 80)}...</code>
                     </div>
-                    <div className="flex gap-3">
+                    <div className="flex flex-col gap-3">
                       <button
-                        onClick={() => {
-                          const blob = new Blob([pendingPrivateKey.privateKey], { type: "text/plain" });
-                          const url = URL.createObjectURL(blob);
-                          const a = document.createElement("a");
-                          a.href = url;
-                          a.download = `${pendingPrivateKey.vaultName}.kem.key`;
-                          a.click();
-                          URL.revokeObjectURL(url);
-                        }}
-                        className="flex-1 bg-violet-600 hover:bg-violet-500 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2"
+                        onClick={savePrivateKeyToLvl2}
+                        className="w-full bg-emerald-700 hover:bg-emerald-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2"
                       >
-                        <Key className="w-4 h-4" /> Download Key
+                        <Shield className="w-4 h-4" /> Save to Lvl 2 — Professional
                       </button>
-                      <button
-                        onClick={() => { copyToClipboard(pendingPrivateKey.privateKey); }}
-                        className="px-4 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg text-sm font-medium transition-all flex items-center gap-2 border border-zinc-800"
-                      >
-                        <Copy className="w-4 h-4" /> Copy
-                      </button>
-                      <button
-                        onClick={() => setPendingPrivateKey(null)}
-                        className="px-4 py-2.5 text-zinc-500 hover:text-zinc-300 rounded-lg text-sm transition-all"
-                      >
-                        Done
-                      </button>
+                      <div className="flex gap-3">
+                        <button
+                          onClick={() => {
+                            const blob = new Blob([pendingPrivateKey.privateKey], { type: "text/plain" });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement("a");
+                            a.href = url;
+                            a.download = `${pendingPrivateKey.vaultName}.kem.key`;
+                            a.click();
+                            URL.revokeObjectURL(url);
+                          }}
+                          className="flex-1 bg-violet-600 hover:bg-violet-500 text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2"
+                        >
+                          <Key className="w-4 h-4" /> Download Key
+                        </button>
+                        <button
+                          onClick={() => { copyToClipboard(pendingPrivateKey.privateKey); }}
+                          className="px-4 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg text-sm font-medium transition-all flex items-center gap-2 border border-zinc-800"
+                        >
+                          <Copy className="w-4 h-4" /> Copy
+                        </button>
+                        <button
+                          onClick={() => setPendingPrivateKey(null)}
+                          className="px-4 py-2.5 text-zinc-500 hover:text-zinc-300 rounded-lg text-sm transition-all"
+                        >
+                          Done
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -2250,21 +2545,13 @@ export default function App() {
 
               {!selectedVault ? (
                 <>
-                  <div className="flex justify-between items-center">
-                    <div>
-                      <h2 className="text-lg font-semibold text-white">Machine Vaults</h2>
-                      <p className="text-xs text-zinc-500 mt-1">Programmatic secret access for services. TOTP-gated, TTL-scoped.</p>
-                    </div>
-                    <button
-                      onClick={() => setIsAddingVault(true)}
-                      className="bg-violet-600 hover:bg-violet-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all duration-150 flex items-center gap-2 shadow-lg shadow-violet-900/30"
-                    >
-                      <Plus className="w-4 h-4" /> New Vault
-                    </button>
-                  </div>
 
                   {isAddingVault && (
                     <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-6 shadow-xl">
+                      <div className="flex items-center justify-between mb-4">
+                        <span className="text-white font-medium text-sm">New Vault</span>
+                        <button onClick={() => { setIsAddingVault(false); setNewVault({ name: "", description: "", ttl: "14400" }); }} className="p-1.5 text-zinc-500 hover:text-white hover:bg-zinc-800 rounded-lg transition-all"><X className="w-4 h-4" /></button>
+                      </div>
                       <div className="space-y-4">
                         <div>
                           <label className="text-xs text-zinc-500 uppercase tracking-wider font-medium">Name</label>
@@ -2305,8 +2592,8 @@ export default function App() {
                   )}
 
                   <div className="bg-zinc-950/50 border border-zinc-900 rounded-xl overflow-hidden shadow-2xl">
-                    <table className="w-full text-left text-sm">
-                      <thead className="bg-black/60 text-zinc-600 text-[10px] uppercase tracking-widest border-b border-zinc-900">
+                    <table className="w-full text-left text-base">
+                      <thead className="bg-black/60 text-zinc-400 text-xs uppercase tracking-widest border-b border-zinc-900">
                         <tr>
                           <th className="px-6 py-4 font-medium">Vault</th>
                           <th className="px-6 py-4 font-medium">TTL</th>
@@ -2381,17 +2668,17 @@ export default function App() {
 
                   <div className="grid grid-cols-3 gap-4">
                     <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4">
-                      <p className="text-[10px] text-zinc-600 uppercase tracking-widest font-medium">TTL</p>
+                      <p className="text-xs text-zinc-600 uppercase tracking-widest font-medium">TTL</p>
                       <p className="text-zinc-200 font-mono text-sm mt-1">{Math.floor(selectedVault.ttl / 3600)}h {Math.floor((selectedVault.ttl % 3600) / 60)}m</p>
                     </div>
                     <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4">
-                      <p className="text-[10px] text-zinc-600 uppercase tracking-widest font-medium">TOTP</p>
+                      <p className="text-xs text-zinc-600 uppercase tracking-widest font-medium">TOTP</p>
                       <p className={`text-sm font-medium mt-1 ${selectedVault.totp_enabled ? "text-emerald-400" : "text-zinc-500"}`}>
                         {selectedVault.totp_enabled ? "Active" : "Not configured"}
                       </p>
                     </div>
                     <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4">
-                      <p className="text-[10px] text-zinc-600 uppercase tracking-widest font-medium">KEM Key</p>
+                      <p className="text-xs text-zinc-600 uppercase tracking-widest font-medium">KEM Key</p>
                       <p className={`text-sm font-medium mt-1 ${selectedVault.has_kem_key ? "text-violet-400" : "text-zinc-500"}`}>
                         {selectedVault.has_kem_key ? "Registered" : "Not set"}
                       </p>
@@ -2400,16 +2687,29 @@ export default function App() {
 
                   <div className="flex justify-between items-center">
                     <h3 className="text-sm font-medium text-zinc-400">Secrets</h3>
-                    <button
-                      onClick={() => setIsAddingMachineSecret(true)}
-                      className="bg-violet-600 hover:bg-violet-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5"
-                    >
-                      <Plus className="w-3.5 h-3.5" /> Add Secret
-                    </button>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => issueOfflineToken(selectedVault.id)}
+                        className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5"
+                        title="Issue an offline token for a machine — encrypts vault secrets with the machine's ML-KEM public key"
+                      >
+                        Offline Token
+                      </button>
+                      <button
+                        onClick={() => setIsAddingMachineSecret(true)}
+                        className="bg-violet-600 hover:bg-violet-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> Add Secret
+                      </button>
+                    </div>
                   </div>
 
                   {isAddingMachineSecret && (
                     <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-5 shadow-xl">
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-white font-medium text-sm">Add Secret</span>
+                        <button onClick={() => { setIsAddingMachineSecret(false); setNewMachineSecret({ name: "", value: "", classification: "cached" }); }} className="p-1.5 text-zinc-500 hover:text-white hover:bg-zinc-800 rounded-lg transition-all"><X className="w-4 h-4" /></button>
+                      </div>
                       <div className="space-y-3">
                         <div>
                           <label className="text-xs text-zinc-500 uppercase tracking-wider font-medium">Key</label>
@@ -2431,19 +2731,37 @@ export default function App() {
                             className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 mt-1 font-mono"
                           />
                         </div>
+                        <div>
+                          <label className="text-xs text-zinc-500 uppercase tracking-wider font-medium">Classification</label>
+                          <div className="flex gap-2 mt-1">
+                            <button
+                              onClick={() => setNewMachineSecret(prev => ({ ...prev, classification: "cached" }))}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${newMachineSecret.classification === "cached" ? "bg-emerald-950 border-emerald-700 text-emerald-300" : "bg-zinc-900 border-zinc-800 text-zinc-500 hover:text-zinc-300"}`}
+                            >
+                              Cached — AES, may cache locally
+                            </button>
+                            <button
+                              onClick={() => setNewMachineSecret(prev => ({ ...prev, classification: "blind" }))}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${newMachineSecret.classification === "blind" ? "bg-rose-950 border-rose-700 text-rose-300" : "bg-zinc-900 border-zinc-800 text-zinc-500 hover:text-zinc-300"}`}
+                            >
+                              Blind — ML-KEM only, never cached
+                            </button>
+                          </div>
+                        </div>
                         <div className="flex gap-3 pt-1">
                           <button onClick={addMachineSecret} className="bg-violet-600 hover:bg-violet-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all">Add</button>
-                          <button onClick={() => { setIsAddingMachineSecret(false); setNewMachineSecret({ name: "", value: "" }); }} className="text-zinc-500 hover:text-zinc-300 px-4 py-2 rounded-lg text-sm transition-all">Cancel</button>
+                          <button onClick={() => { setIsAddingMachineSecret(false); setNewMachineSecret({ name: "", value: "", classification: "cached" }); }} className="text-zinc-500 hover:text-zinc-300 px-4 py-2 rounded-lg text-sm transition-all">Cancel</button>
                         </div>
                       </div>
                     </div>
                   )}
 
                   <div className="bg-zinc-950/50 border border-zinc-900 rounded-xl overflow-hidden shadow-2xl">
-                    <table className="w-full text-left text-sm">
-                      <thead className="bg-black/60 text-zinc-600 text-[10px] uppercase tracking-widest border-b border-zinc-900">
+                    <table className="w-full text-left text-base">
+                      <thead className="bg-black/60 text-zinc-400 text-xs uppercase tracking-widest border-b border-zinc-900">
                         <tr>
                           <th className="px-6 py-4 font-medium">Key</th>
+                          <th className="px-6 py-4 font-medium">Class</th>
                           <th className="px-6 py-4 font-medium">Added</th>
                           <th className="px-6 py-4 font-medium"></th>
                         </tr>
@@ -2452,6 +2770,11 @@ export default function App() {
                         {vaultSecrets.map(secret => (
                           <tr key={secret.id} className="hover:bg-zinc-900/40 transition-all duration-100 border-b border-zinc-900/50">
                             <td className="px-6 py-4 text-zinc-200 font-mono text-xs">{secret.name}</td>
+                            <td className="px-6 py-4">
+                              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${secret.classification === "blind" ? "bg-rose-950 text-rose-400 border border-rose-800" : "bg-emerald-950 text-emerald-400 border border-emerald-900"}`}>
+                                {secret.classification === "blind" ? "blind" : "cached"}
+                              </span>
+                            </td>
                             <td className="px-6 py-4 text-zinc-500 text-xs">{new Date(secret.created_at).toLocaleDateString()}</td>
                             <td className="px-6 py-4">
                               <button
@@ -2536,6 +2859,7 @@ export default function App() {
           )}
         </main>
       </div>
+      </div> {/* end body wrapper */}
 
       {/* Settings Modal */}
       <AnimatePresence>
@@ -2763,6 +3087,13 @@ export default function App() {
                           </label>
                         ))}
                       </div>
+                    </section>
+
+                    {/* Section: Backup & Restore */}
+                    <section className="pt-6 border-t border-zinc-800/60">
+                      <h3 className="text-sm font-semibold text-zinc-200 mb-1">Backup &amp; Restore</h3>
+                      <p className="text-xs text-zinc-500 mb-4">Encrypted export of all vault data. Requires lvl0. The backup passphrase is independent of your vault credentials.</p>
+                      <BackupRestore authLevel={authLevel} sessionToken={sessionToken} />
                     </section>
 
                     {/* Section: Danger Zone */}

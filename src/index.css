@@ -14,11 +14,23 @@
   --color-violet-950: #1a1528;
 }
 
+html {
+  font-size: 17px;
+}
+
 body {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  font-size: 1rem;
+  color: #ffffff;
 }
+
+/* Pure bright white everywhere */
+.text-white { color: #ffffff !important; }
+.text-zinc-100, .text-zinc-200, .text-zinc-300 { color: #ffffff !important; }
+.text-zinc-400 { color: #d4d4d8 !important; }
+.text-zinc-500, .text-zinc-600 { color: #b0b0b8 !important; }
 
 /* Custom scrollbar */
 * {
@@ -30,14 +42,21 @@ body {
 *::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 99px; }
 *::-webkit-scrollbar-thumb:hover { background: #52525b; }
 
-/* Smooth transitions globally */
+/* Smooth spring easing globally */
 * {
   transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* Buttons and interactive elements get a default smooth transition */
+/* Interactive elements */
 button, a, input, select, textarea {
-  transition-duration: 150ms;
+  transition-duration: 200ms;
+}
+
+/* Sidebar width animation */
+[data-sidebar] {
+  transition-property: width;
+  transition-duration: 350ms;
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* GPU-composite the modal overlay for silky rendering */

@@ -21,6 +21,9 @@ lvls.db
 lvls.db-shm
 lvls.db-wal
 
+# Python cache
+__pycache__/
+
 # Dev/temp files
 test.txt
 seed.js
@@ -32,3 +35,15 @@ server.log
 # BetterLeaks binary — install locally, do not commit the binary
 betterleaks.exe
 betterleaks
+
+# Internal docs — audit reports, planning, and client scripts with infra details
+AUDIT-*.md
+*-security-audit.md
+implementation_plan.md
+lvls_client.py
+lvls-client.ts
+migrate-encrypt-db.mjs
+
+# Unencrypted DB backups
+*.unencrypted.bak
+*.unencrypted.bak2

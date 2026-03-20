@@ -130,6 +130,79 @@ export async function generateKemKeyPair(): Promise<KemKeyPair> {
   };
 }
 
+/**
+ * Derive a deterministic ML-KEM-768 keypair from a TOTP seed string.
+ * Uses HKDF-SHA256 to expand the seed into 64 bytes for ML-KEM keygen.
+ * This allows machines to regenerate their keypair from the seed without storing keys.
+ */
+export async function deriveKemKeypairFromSeed(totpSeed: string): Promise<KemKeyPair> {
+  const { ml_kem768 } = await getMlKem();
+  const enc = new TextEncoder();
+  // HKDF: expand seed → 64 bytes deterministically
+  const keyMaterial = await crypto.subtle.importKey("raw", enc.encode(totpSeed), "HKDF", false, ["deriveBits"]);
+  const derived = await crypto.subtle.deriveBits(
+    { name: "HKDF", hash: "SHA-256", salt: enc.encode("lvls-kem-seed-v1"), info: enc.encode("ml-kem-768-keypair") },
+    keyMaterial,
+    512 // 64 bytes
+  );
+  const seed = new Uint8Array(derived);
+  const { publicKey, secretKey } = ml_kem768.keygen(seed);
+  return {
+    publicKey: u8ToB64(publicKey),
+    privateKey: u8ToB64(secretKey),
+  };
+}
+
+/**
+ * Decrypt an offline token issued by the lvls server.
+ * The token was encrypted with this machine's ML-KEM public key.
+ * Returns the decrypted payload as a parsed object.
+ */
+export async function decryptOfflineToken(token: {
+  kem_ciphertext: string;
+  aes_ciphertext: string;
+  server_signature: string;
+  server_ed25519_public_key: string;
+}, privateKeyB64: string): Promise<{
+  secrets: Array<{ name: string; encrypted_value: string; classification: string }>;
+  vault_id: string; machine_id: string; expires_at: number;
+}> {
+  // 1. Verify server signature over kemCiphertext + aesCiphertext
+  const sigInput = new TextEncoder().encode(token.kem_ciphertext + "." + token.aes_ciphertext);
+  const sig = Uint8Array.from(atob(token.server_signature), c => c.charCodeAt(0));
+  const serverPub = Uint8Array.from(atob(token.server_ed25519_public_key), c => c.charCodeAt(0));
+  // Ed25519 verify via Web Crypto (supported in modern browsers)
+  const pubKey = await crypto.subtle.importKey("raw", serverPub, { name: "Ed25519" }, false, ["verify"]);
+  const valid = await crypto.subtle.verify({ name: "Ed25519" }, pubKey, sig, sigInput);
+  if (!valid) throw new Error("Offline token signature verification failed");
+
+  // 2. ML-KEM decapsulate → shared secret
+  const sharedSecret = await kemDecapsulate(privateKeyB64, token.kem_ciphertext);
+
+  // 3. HKDF shared secret → AES key
+  const hkdfKey = await crypto.subtle.importKey("raw", sharedSecret, "HKDF", false, ["deriveKey"]);
+  const aesKey = await crypto.subtle.deriveKey(
+    { name: "HKDF", hash: "SHA-256", salt: new TextEncoder().encode("lvls-offline-token-v1"), info: new TextEncoder().encode("") },
+    hkdfKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["decrypt"]
+  );
+
+  // 4. AES-GCM decrypt: iv(12) + tag(16) + ciphertext
+  const packed = Uint8Array.from(atob(token.aes_ciphertext), c => c.charCodeAt(0));
+  const iv = packed.slice(0, 12);
+  const tag = packed.slice(12, 28);
+  const ciphertext = packed.slice(28);
+  // Re-pack for Web Crypto (it expects tag appended to ciphertext)
+  const ciphertextWithTag = new Uint8Array(ciphertext.length + tag.length);
+  ciphertextWithTag.set(ciphertext);
+  ciphertextWithTag.set(tag, ciphertext.length);
+  const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, aesKey, ciphertextWithTag);
+
+  return JSON.parse(new TextDecoder().decode(plaintext));
+}
+
 export async function kemEncapsulate(publicKeyB64: string): Promise<{ ciphertext: string; sharedSecret: Uint8Array }> {
   const { ml_kem768 } = await getMlKem();
   const publicKey = Uint8Array.from(atob(publicKeyB64), c => c.charCodeAt(0));
@@ -205,6 +278,5 @@ export async function decryptForLevel(
   if (parsed.type === "aes") {
     return decryptAES(parsed.ciphertext, credential);
   }
-  // Legacy fallback
-  try { return atob(encryptedJson); } catch { return encryptedJson; }
+  throw new Error(`Unknown encryption type: ${parsed.type ?? "none"}`);
 }
