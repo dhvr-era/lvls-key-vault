@@ -329,6 +329,21 @@ const _serverEd25519Seed = new Uint8Array(crypto.hkdfSync(
 const SERVER_ED25519_PRIV: Uint8Array = _serverEd25519Seed;
 const SERVER_ED25519_PUB: Uint8Array = ed25519.getPublicKey(SERVER_ED25519_PRIV);
 
+// ---------- Server ML-KEM1 keypair (derived from LVLS_DB_KEY) ────────────────
+// Deterministic seed — never stored, always re-derived at startup.
+// Used server-side to decrypt blind vault secrets before re-encrypting to ML-KEM2.
+// TODO: Vault secrets must be re-added via UI after this change — existing browser-generated
+//       ML-KEM1 keypairs in machine_vaults.kem_public_key are incompatible with this derived keypair.
+const _serverMlKem1Seed = new Uint8Array(crypto.hkdfSync(
+  "sha256",
+  Buffer.from(process.env.LVLS_DB_KEY!),
+  Buffer.from("lvls-mlkem1-seed-v1"),
+  Buffer.from("mlkem1-vault-key"),
+  64
+));
+let SERVER_ML_KEM1_PRIV: Uint8Array | null = null;
+let SERVER_ML_KEM1_PUB: Uint8Array | null = null;
+
 // Verify an Ed25519 machine auth payload: signature over "lvls:{vaultId}:{machineId}:{timestamp}"
 function verifyMachineSignature(vaultId: string, machineId: string, timestamp: number, signatureB64: string, publicKeyB64: string): boolean {
   try {
@@ -1057,8 +1072,14 @@ app.get("/api/machine/server-key", (_req, res) => {
   res.json({ ed25519_public_key: Buffer.from(SERVER_ED25519_PUB).toString("base64") });
 });
 
+// Return server's ML-KEM1 public key so the UI encrypts blind secrets to the server-derived keypair
+app.get("/api/machine/ml-kem1-public-key", (_req, res) => {
+  if (!SERVER_ML_KEM1_PUB) return res.status(503).json({ error: "Server ML-KEM1 key not yet initialised" });
+  res.json({ ml_kem1_public_key: Buffer.from(SERVER_ML_KEM1_PUB).toString("base64") });
+});
+
 // ── Credential Request — Ed25519 or TOTP-gated, lease-issuing, no session auth ─
-app.post("/api/machine/vaults/:id/request", authRateLimit, (req, res) => {
+app.post("/api/machine/vaults/:id/request", authRateLimit, async (req, res) => {
   const vault = db.prepare("SELECT id, name, totp_secret, totp_enabled, ttl, kem_public_key FROM machine_vaults WHERE id = ?").get(req.params.id) as any;
   if (!vault) return res.status(404).json({ error: "Vault not found" });
   if (!vault.kem_public_key) return res.status(400).json({ error: "Vault has no KEM key — not ready for use" });
@@ -1145,24 +1166,84 @@ app.post("/api/machine/vaults/:id/request", authRateLimit, (req, res) => {
   db.prepare(
     "INSERT INTO leases (id, vault_id, machine_id, issued_at, expires_at, grace_until, status) VALUES (?, ?, ?, ?, ?, ?, 'active')"
   ).run(leaseId, vault.id, machineId, now, expiresAt, graceUntil);
-  // Decrypt cached secrets server-side before serving; blind secrets served as-is (machine decrypts)
-  const servedSecrets = secrets.map((s: any) => {
+  // Fetch machine's ML-KEM2 public key for re-encryption
+  const machineIdentity = db.prepare("SELECT kem_public_key FROM machine_identities WHERE machine_id = ?").get(machineId) as any;
+  if (!machineIdentity?.kem_public_key) {
+    auditLease("access_denied", null, machineId, vault.id, sourceIp, undefined, { reason: "no_kem2_key" });
+    return res.status(400).json({ error: "Machine has no ML-KEM2 public key registered. Register via POST /api/machine/identities with kem_public_key." });
+  }
+  if (!SERVER_ML_KEM1_PRIV) {
+    return res.status(503).json({ error: "Server ML-KEM1 key not yet initialised" });
+  }
+
+  const { ml_kem768 } = await import("@noble/post-quantum/ml-kem.js");
+
+  // Decrypt each secret server-side, zero plaintext after re-encryption
+  const decryptedSecrets: { name: string; value: string; classification: string }[] = [];
+  for (const s of secrets) {
     if (s.classification === "cached") {
       try {
-        return { ...s, encrypted_value: decryptCachedSecret(s.encrypted_value, vault.id) };
+        const plaintext = decryptCachedSecret(s.encrypted_value, vault.id);
+        decryptedSecrets.push({ name: s.name, value: plaintext, classification: s.classification });
       } catch {
-        console.warn(`[lvls] Cached secret has stale format — re-add via UI`);
-        return { ...s, encrypted_value: null };
+        console.warn(`[lvls] Cached secret '${s.name}' has stale format — re-add via UI`);
+        decryptedSecrets.push({ name: s.name, value: "", classification: s.classification });
+      }
+    } else {
+      // blind — decrypt with ML-KEM1 private key, re-encrypt to ML-KEM2
+      try {
+        const blob = JSON.parse(s.encrypted_value) as { kemCiphertext: string; aesCiphertext: string };
+        const kemCt = Uint8Array.from(Buffer.from(blob.kemCiphertext, "base64"));
+        const aesBuf = Buffer.from(blob.aesCiphertext, "base64");
+        const sharedSecret = ml_kem768.decapsulate(kemCt, SERVER_ML_KEM1_PRIV!);
+        const salt = aesBuf.subarray(0, 16);
+        const iv   = aesBuf.subarray(16, 28);
+        const rest = aesBuf.subarray(28);
+        const aesKey = Buffer.from(crypto.hkdfSync("sha256", Buffer.from(sharedSecret), Buffer.from(salt), Buffer.from("lvls-v1-aes-gcm-256"), 32));
+        const decipher = crypto.createDecipheriv("aes-256-gcm", aesKey, iv);
+        decipher.setAuthTag(rest.subarray(rest.length - 16));
+        const plaintext = Buffer.concat([decipher.update(rest.subarray(0, rest.length - 16)), decipher.final()]).toString("utf8");
+        decryptedSecrets.push({ name: s.name, value: plaintext, classification: s.classification });
+      } catch (e) {
+        console.warn(`[lvls] Blind secret '${s.name}' could not be decrypted — re-add via UI after ML-KEM1 key registration:`, e);
+        decryptedSecrets.push({ name: s.name, value: "", classification: s.classification });
       }
     }
-    return s; // blind — return ML-KEM blob as-is
+  }
+
+  // Re-encrypt full payload to machine's ML-KEM2 public key, sign with Server DS
+  const payload = JSON.stringify({
+    secrets: decryptedSecrets,
+    vault_id: vault.id, vault_name: vault.name, machine_id: machineId,
+    issued_at: now, expires_at: expiresAt, lease_id: leaseId,
   });
+  const machinePub = Uint8Array.from(Buffer.from(machineIdentity.kem_public_key, "base64"));
+  const seed = crypto.getRandomValues(new Uint8Array(32));
+  const { cipherText, sharedSecret: kem2Shared } = ml_kem768.encapsulate(machinePub, seed);
+  const kem2AesKey = Buffer.from(crypto.hkdfSync("sha256", Buffer.from(kem2Shared), Buffer.from("lvls-offline-token-v1"), Buffer.from(""), 32));
+  const kem2Iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", kem2AesKey, kem2Iv);
+  const encPayload = Buffer.concat([cipher.update(payload, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  const aesPacked = Buffer.concat([kem2Iv, tag, encPayload]).toString("base64");
+  const kemB64 = Buffer.from(cipherText).toString("base64");
+  const sigInput = new TextEncoder().encode(`${kemB64}.${aesPacked}`);
+  const serverSig = ed25519.sign(sigInput, SERVER_ED25519_PRIV);
 
   auditLease("issued", leaseId, machineId, vault.id, sourceIp, secrets.map((s: any) => s.name));
   db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
     .run(sourceIp, -1, "machine_request", JSON.stringify({ vault: vault.name, secrets: secrets.length, lease_id: leaseId }));
 
-  res.json({ secrets: servedSecrets, lease_id: leaseId, expires_at: new Date(expiresAt).toISOString(), vault_name: vault.name, ttl: effectiveTtl });
+  res.json({
+    kem_ciphertext: kemB64,
+    aes_ciphertext: aesPacked,
+    server_signature: Buffer.from(serverSig).toString("base64"),
+    server_ed25519_public_key: Buffer.from(SERVER_ED25519_PUB).toString("base64"),
+    lease_id: leaseId,
+    expires_at: new Date(expiresAt).toISOString(),
+    vault_name: vault.name,
+    ttl: effectiveTtl,
+  });
 });
 
 // ── Offline token — pre-signed ML-KEM token for offline operation ──────────────
@@ -1622,6 +1703,13 @@ async function startServer() {
   } else {
     app.use(express.static("dist"));
   }
+
+  // Initialise server ML-KEM1 keypair from deterministic seed
+  const { ml_kem768: _mlkem } = await import("@noble/post-quantum/ml-kem.js");
+  const _mlKem1Keys = _mlkem.keygen(_serverMlKem1Seed);
+  SERVER_ML_KEM1_PRIV = _mlKem1Keys.secretKey;
+  SERVER_ML_KEM1_PUB = _mlKem1Keys.publicKey;
+  console.log("[lvls] Server ML-KEM1 public key:", Buffer.from(SERVER_ML_KEM1_PUB).toString("base64").slice(0, 16) + "…");
 
   const tls = loadTlsOptions();
 

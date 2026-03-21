@@ -194,7 +194,7 @@ function AuthModal({ authLevel, targetLevel, totpStatus, configuredLevels, authI
 
   return (
     <motion.div
-      className="fixed inset-0 flex items-center justify-center z-50 p-4"
+      className="fixed inset-0 flex items-center justify-center z-[60] p-4"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -1103,8 +1103,14 @@ export default function App() {
   const [selectedVault, setSelectedVault] = useState<MachineVault | null>(null);
   const [vaultSecrets, setVaultSecrets] = useState<MachineSecret[]>([]);
   const [isAddingVault, setIsAddingVault] = useState(false);
+  const [cancelVaultConfirm, setCancelVaultConfirm] = useState(false);
+  const [issuingOfflineToken, setIssuingOfflineToken] = useState(false);
+  const [offlineTokenForm, setOfflineTokenForm] = useState({ machineId: "", ttlHours: "24" });
+  const [pendingDelete, setPendingDelete] = useState<{ type: 'secret' | 'vault' | 'machineSecret'; id: string; name: string } | null>(null);
+  const [pendingSaveToLvl2, setPendingSaveToLvl2] = useState(false);
   const [isAddingMachineSecret, setIsAddingMachineSecret] = useState(false);
   const [newVault, setNewVault] = useState({ name: "", description: "", ttl: "14400" });
+  const [pendingSecretLevel, setPendingSecretLevel] = useState<number | null>(null);
   const [newMachineSecret, setNewMachineSecret] = useState({ name: "", value: "", classification: "cached" });
   const [pendingPrivateKey, setPendingPrivateKey] = useState<{ vaultName: string; privateKey: string } | null>(null);
   
@@ -1232,6 +1238,13 @@ export default function App() {
       })
       .catch(() => {});
   }, [sessionToken, showSettings]);
+
+  useEffect(() => {
+    if (pendingSaveToLvl2 && authLevel <= 2 && sessionCredentials[2]) {
+      setPendingSaveToLvl2(false);
+      savePrivateKeyToLvl2();
+    }
+  }, [pendingSaveToLvl2, authLevel, sessionCredentials]);
 
   const fetchSecrets = async () => {
     try {
@@ -1384,15 +1397,13 @@ export default function App() {
 
   const savePrivateKeyToLvl2 = async () => {
     if (!pendingPrivateKey) return;
-    if (authLevel > 2) {
-      alert("Unlock Lvl 2 first — authenticate at Lvl 2 in the main vault, then come back to create the machine vault.");
+    if (authLevel > 2 || !sessionCredentials[2]) {
+      setPendingSaveToLvl2(true);
+      setPendingAuthLevel(2);
+      setShowAuthModal(true);
       return;
     }
     const credential = sessionCredentials[2];
-    if (!credential) {
-      alert("Lvl 2 credential not in session. Re-authenticate at Lvl 2.");
-      return;
-    }
     try {
       let publicKeyB64: string | undefined;
       try {
@@ -1434,9 +1445,8 @@ export default function App() {
   };
 
   const issueOfflineToken = async (vaultId: string) => {
-    const machineId = prompt("Machine ID to issue offline token for:");
-    if (!machineId?.trim()) return;
-    const ttlHours = prompt("TTL in hours (default: 24):", "24");
+    const { machineId, ttlHours } = offlineTokenForm;
+    if (!machineId.trim()) return;
     const ttlSeconds = Math.max(300, Math.min(604800, parseInt(ttlHours || "24", 10) * 3600));
     try {
       const res = await fetch(`/api/admin/machine/vaults/${vaultId}/offline-token`, {
@@ -1446,11 +1456,10 @@ export default function App() {
       });
       if (!res.ok) {
         const err = await res.json();
-        alert(`Failed: ${err.error}`);
+        setStatus({ type: "error", msg: err.error || "Failed to issue offline token" });
         return;
       }
       const token = await res.json();
-      // Download as JSON file
       const blob = new Blob([JSON.stringify(token, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -1458,9 +1467,11 @@ export default function App() {
       a.download = `lvls-offline-token-${machineId.trim()}-${vaultId.slice(0, 8)}.json`;
       a.click();
       URL.revokeObjectURL(url);
+      setIssuingOfflineToken(false);
+      setOfflineTokenForm({ machineId: "", ttlHours: "24" });
     } catch (error) {
       console.error("Failed to issue offline token", error);
-      alert("Failed to issue offline token. Check console.");
+      setStatus({ type: "error", msg: "Failed to issue offline token — check console" });
     }
   };
 
@@ -1504,6 +1515,10 @@ export default function App() {
         setAuthInput("");
         setTotpInput("");
         setShowAuthModal(false);
+        if (pendingSecretLevel !== null && pendingSecretLevel === targetLevel) {
+          setNewSecret(prev => ({ ...prev, level: pendingSecretLevel }));
+          setPendingSecretLevel(null);
+        }
       } else {
         setAuthError(data.error || "Invalid credential");
       }
@@ -1801,6 +1816,40 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      {/* Delete confirmation modal */}
+      {pendingDelete && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-zinc-900 border border-zinc-700 rounded-xl p-6 w-full max-w-sm shadow-2xl">
+            <p className="text-zinc-200 text-sm font-medium mb-1">Delete {pendingDelete.type === 'vault' ? 'vault' : 'secret'}?</p>
+            <p className="text-zinc-400 text-xs mb-5">
+              <span className="font-mono text-zinc-200">{pendingDelete.name}</span>
+              {pendingDelete.type === 'vault' && <span className="block mt-1 text-rose-400">This will delete the vault and all its secrets.</span>}
+              <span className="block mt-1">This cannot be undone.</span>
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setPendingDelete(null)}
+                className="px-4 py-1.5 text-xs rounded-lg bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-all"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  const { type, id } = pendingDelete;
+                  setPendingDelete(null);
+                  if (type === 'secret') handleDeleteSecret(id);
+                  else if (type === 'vault') deleteMachineVault(id);
+                  else deleteMachineSecret(id);
+                }}
+                className="px-4 py-1.5 text-xs rounded-lg bg-rose-600 text-white hover:bg-rose-500 transition-all"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Top ribbon — full width */}
       <header className="h-14 border-b border-zinc-800/50 relative flex items-center px-4 bg-black shrink-0 z-20">
         {/* Left: logo with spacing */}
@@ -2011,18 +2060,23 @@ export default function App() {
                       </label>
                       <select
                         value={newSecret.level}
-                        onChange={(e) =>
-                          setNewSecret({
-                            ...newSecret,
-                            level: Number(e.target.value),
-                          })
-                        }
+                        onChange={(e) => {
+                          const selected = Number(e.target.value);
+                          if (authLevel > selected) {
+                            // Not authenticated at this level — trigger auth first, apply level after
+                            setPendingSecretLevel(selected);
+                            setPendingAuthLevel(selected);
+                            setShowAuthModal(true);
+                          } else {
+                            setNewSecret({ ...newSecret, level: selected });
+                          }
+                        }}
                         className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-violet-600"
                       >
-                        <option value={3} disabled={authLevel > 3}>lvl3 — Everyday (Social, Wi-Fi, plates, basic info)</option>
-                        <option value={2} disabled={authLevel > 2}>Lvl 2 — Professional (APIs, IAM, Work Email, DAOs)</option>
-                        <option value={1} disabled={authLevel > 1}>Lvl 1 — Personal/Infra (Finance, Health, SSH, Personal IDs)</option>
-                        <option value={0} disabled={authLevel > 0}>Lvl 0 — Critical (Seeds, Master Identity, BCI, NFC Cards)</option>
+                        <option value={3}>lvl3 — Everyday (Social, Wi-Fi, plates, basic info)</option>
+                        <option value={2}>Lvl 2 — Professional (APIs, IAM, Work Email, DAOs){authLevel > 2 ? " 🔒" : ""}</option>
+                        <option value={1}>Lvl 1 — Personal/Infra (Finance, Health, SSH, Personal IDs){authLevel > 1 ? " 🔒" : ""}</option>
+                        <option value={0}>Lvl 0 — Critical (Seeds, Master Identity, BCI, NFC Cards){authLevel > 0 ? " 🔒" : ""}</option>
                       </select>
 
                     </div>
@@ -2363,7 +2417,7 @@ export default function App() {
                                   <Pencil className="w-4 h-4" />
                                 </button>
                                 <button
-                                  onClick={() => handleDeleteSecret(secret.id)}
+                                  onClick={() => setPendingDelete({ type: 'secret', id: secret.id, name: secret.name })}
                                   className="text-zinc-500 hover:text-rose-300 opacity-0 group-hover:opacity-100 transition-all p-1"
                                   title="Delete Secret"
                                 >
@@ -2548,46 +2602,58 @@ export default function App() {
 
                   {isAddingVault && (
                     <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-6 shadow-xl">
-                      <div className="flex items-center justify-between mb-4">
-                        <span className="text-white font-medium text-sm">New Vault</span>
-                        <button onClick={() => { setIsAddingVault(false); setNewVault({ name: "", description: "", ttl: "14400" }); }} className="p-1.5 text-zinc-500 hover:text-white hover:bg-zinc-800 rounded-lg transition-all"><X className="w-4 h-4" /></button>
-                      </div>
-                      <div className="space-y-4">
-                        <div>
-                          <label className="text-xs text-zinc-500 uppercase tracking-wider font-medium">Name</label>
-                          <input
-                            type="text"
-                            placeholder="e.g. database, api-gateway, proxy"
-                            value={newVault.name}
-                            onChange={e => setNewVault(prev => ({ ...prev, name: e.target.value.replace(/[^a-zA-Z0-9_-]/g, '') }))}
-                            className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 mt-1"
-                          />
+                      {cancelVaultConfirm ? (
+                        <div className="flex flex-col gap-4">
+                          <p className="text-sm text-zinc-300">Sure to cancel <span className="text-white font-medium">{newVault.name || "this"}</span> vault creation?</p>
+                          <div className="flex gap-3">
+                            <button onClick={() => { setIsAddingVault(false); setCancelVaultConfirm(false); setNewVault({ name: "", description: "", ttl: "14400" }); }} className="bg-red-600/20 hover:bg-red-600/30 text-red-400 px-4 py-2 rounded-lg text-sm font-medium transition-all">Yes, cancel</button>
+                            <button onClick={() => setCancelVaultConfirm(false)} className="text-zinc-500 hover:text-zinc-300 px-4 py-2 rounded-lg text-sm transition-all">Keep editing</button>
+                          </div>
                         </div>
-                        <div>
-                          <label className="text-xs text-zinc-500 uppercase tracking-wider font-medium">Description</label>
-                          <input
-                            type="text"
-                            placeholder="What service uses this vault?"
-                            value={newVault.description}
-                            onChange={e => setNewVault(prev => ({ ...prev, description: e.target.value }))}
-                            className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 mt-1"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-xs text-zinc-500 uppercase tracking-wider font-medium">TTL (seconds)</label>
-                          <input
-                            type="number"
-                            value={newVault.ttl}
-                            onChange={e => setNewVault(prev => ({ ...prev, ttl: e.target.value }))}
-                            className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-zinc-700 mt-1"
-                          />
-                          <p className="text-xs text-zinc-600 mt-1">{Math.floor(parseInt(newVault.ttl || "0") / 3600)}h {Math.floor((parseInt(newVault.ttl || "0") % 3600) / 60)}m</p>
-                        </div>
-                        <div className="flex gap-3 pt-2">
-                          <button onClick={createMachineVault} className="bg-violet-600 hover:bg-violet-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all">Create</button>
-                          <button onClick={() => { setIsAddingVault(false); setNewVault({ name: "", description: "", ttl: "14400" }); }} className="text-zinc-500 hover:text-zinc-300 px-4 py-2 rounded-lg text-sm transition-all">Cancel</button>
-                        </div>
-                      </div>
+                      ) : (
+                        <>
+                          <div className="flex items-center justify-between mb-4">
+                            <span className="text-white font-medium text-sm">New Vault</span>
+                            <button onClick={() => newVault.name ? setCancelVaultConfirm(true) : (setIsAddingVault(false), setNewVault({ name: "", description: "", ttl: "14400" }))} className="p-1.5 text-zinc-500 hover:text-white hover:bg-zinc-800 rounded-lg transition-all"><X className="w-4 h-4" /></button>
+                          </div>
+                          <div className="space-y-4">
+                            <div>
+                              <label className="text-xs text-zinc-500 uppercase tracking-wider font-medium">Name</label>
+                              <input
+                                type="text"
+                                placeholder="e.g. database, api-gateway, proxy"
+                                value={newVault.name}
+                                onChange={e => setNewVault(prev => ({ ...prev, name: e.target.value.replace(/[^a-zA-Z0-9_-]/g, '') }))}
+                                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 mt-1"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs text-zinc-500 uppercase tracking-wider font-medium">Description</label>
+                              <input
+                                type="text"
+                                placeholder="What service uses this vault?"
+                                value={newVault.description}
+                                onChange={e => setNewVault(prev => ({ ...prev, description: e.target.value }))}
+                                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 mt-1"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs text-zinc-500 uppercase tracking-wider font-medium">TTL (seconds)</label>
+                              <input
+                                type="number"
+                                value={newVault.ttl}
+                                onChange={e => setNewVault(prev => ({ ...prev, ttl: e.target.value }))}
+                                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-zinc-700 mt-1"
+                              />
+                              <p className="text-xs text-zinc-600 mt-1">{Math.floor(parseInt(newVault.ttl || "0") / 3600)}h {Math.floor((parseInt(newVault.ttl || "0") % 3600) / 60)}m</p>
+                            </div>
+                            <div className="flex gap-3 pt-2">
+                              <button onClick={createMachineVault} className="bg-violet-600 hover:bg-violet-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all">Create</button>
+                              <button onClick={() => newVault.name ? setCancelVaultConfirm(true) : (setIsAddingVault(false), setNewVault({ name: "", description: "", ttl: "14400" }))} className="text-zinc-500 hover:text-zinc-300 px-4 py-2 rounded-lg text-sm transition-all">Cancel</button>
+                            </div>
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
 
@@ -2628,7 +2694,7 @@ export default function App() {
                             <td className="px-6 py-4 text-zinc-500 text-xs">{new Date(vault.created_at).toLocaleDateString()}</td>
                             <td className="px-6 py-4">
                               <button
-                                onClick={(e) => { e.stopPropagation(); deleteMachineVault(vault.id); }}
+                                onClick={(e) => { e.stopPropagation(); setPendingDelete({ type: 'vault', id: vault.id, name: vault.name }); }}
                                 className="p-1.5 text-zinc-600 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-all"
                                 title="Delete vault"
                               >
@@ -2689,7 +2755,7 @@ export default function App() {
                     <h3 className="text-sm font-medium text-zinc-400">Secrets</h3>
                     <div className="flex gap-2">
                       <button
-                        onClick={() => issueOfflineToken(selectedVault.id)}
+                        onClick={() => setIssuingOfflineToken(v => !v)}
                         className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5"
                         title="Issue an offline token for a machine — encrypts vault secrets with the machine's ML-KEM public key"
                       >
@@ -2703,6 +2769,42 @@ export default function App() {
                       </button>
                     </div>
                   </div>
+
+                  {issuingOfflineToken && (
+                    <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-5 shadow-xl">
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-white font-medium text-sm">Issue Offline Token</span>
+                        <button onClick={() => { setIssuingOfflineToken(false); setOfflineTokenForm({ machineId: "", ttlHours: "24" }); }} className="p-1.5 text-zinc-500 hover:text-white hover:bg-zinc-800 rounded-lg transition-all"><X className="w-4 h-4" /></button>
+                      </div>
+                      <div className="space-y-3">
+                        <div>
+                          <label className="text-xs text-zinc-500 uppercase tracking-wider font-medium">Machine ID</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. clutch-prod"
+                            value={offlineTokenForm.machineId}
+                            onChange={e => setOfflineTokenForm(prev => ({ ...prev, machineId: e.target.value }))}
+                            className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700 mt-1"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-zinc-500 uppercase tracking-wider font-medium">TTL (hours)</label>
+                          <input
+                            type="number"
+                            min="1"
+                            max="168"
+                            value={offlineTokenForm.ttlHours}
+                            onChange={e => setOfflineTokenForm(prev => ({ ...prev, ttlHours: e.target.value }))}
+                            className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-zinc-700 mt-1"
+                          />
+                        </div>
+                        <div className="flex gap-3 pt-1">
+                          <button onClick={() => issueOfflineToken(selectedVault.id)} disabled={!offlineTokenForm.machineId.trim()} className="bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40 text-white px-4 py-2 rounded-lg text-sm font-medium transition-all">Issue &amp; Download</button>
+                          <button onClick={() => { setIssuingOfflineToken(false); setOfflineTokenForm({ machineId: "", ttlHours: "24" }); }} className="text-zinc-500 hover:text-zinc-300 px-4 py-2 rounded-lg text-sm transition-all">Cancel</button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {isAddingMachineSecret && (
                     <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-5 shadow-xl">
@@ -2778,7 +2880,7 @@ export default function App() {
                             <td className="px-6 py-4 text-zinc-500 text-xs">{new Date(secret.created_at).toLocaleDateString()}</td>
                             <td className="px-6 py-4">
                               <button
-                                onClick={() => deleteMachineSecret(secret.id)}
+                                onClick={() => setPendingDelete({ type: 'machineSecret', id: secret.id, name: secret.name })}
                                 className="p-1.5 text-zinc-600 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-all"
                                 title="Delete secret"
                               >
