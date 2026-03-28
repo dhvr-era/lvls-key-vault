@@ -15,6 +15,17 @@ const app = express();
 app.disable("x-powered-by");
 app.set("trust proxy", false);
 const PORT = parseInt(process.env.PORT || "5000", 10);
+
+// ── 4Context Hub fan-out ────────────────────────────────────────────────────────
+const CONTEXT4_HUB_URL = process.env.CONTEXT4_HUB_URL || "http://100.64.0.3:4000";
+function emitToHub(payload: Record<string, unknown>): void {
+  const body = JSON.stringify({ ...payload, occurred_at: new Date().toISOString() });
+  fetch(`${CONTEXT4_HUB_URL}/api/event`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+  }).catch((e: any) => console.warn("[lvls] emitToHub failed (non-fatal):", e.message));
+}
 if (!process.env.JWT_SECRET) {
   console.error("[SECURITY] JWT_SECRET is not set — refusing to start. Set a stable random secret in .env to preserve sessions across restarts.");
   process.exit(1);
@@ -317,6 +328,37 @@ for (const m of migrations) {
   try { db.exec(m); } catch { /* column already exists or not supported */ }
 }
 
+// ── Machine admin grants — per-machine, per-vault, secrets-rw only ───────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS machine_admin_grants (
+    id TEXT PRIMARY KEY,
+    vault_id TEXT NOT NULL,
+    machine_id TEXT NOT NULL,
+    granted_by TEXT NOT NULL DEFAULT 'admin',
+    scope TEXT NOT NULL DEFAULT 'secrets-rw',
+    active INTEGER DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    revoked_at INTEGER,
+    FOREIGN KEY (vault_id) REFERENCES machine_vaults(id) ON DELETE CASCADE
+  );
+`);
+try { db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_machine_admin_grants_unique ON machine_admin_grants(vault_id, machine_id) WHERE active = 1"); } catch {}
+
+// ── Secret mutation audit log ─────────────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS secret_mutations (
+    id TEXT PRIMARY KEY,
+    vault_id TEXT NOT NULL,
+    secret_name TEXT NOT NULL,
+    action TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    actor_type TEXT NOT NULL,
+    source_ip TEXT,
+    occurred_at INTEGER NOT NULL
+  );
+`);
+try { db.exec("CREATE INDEX IF NOT EXISTS idx_secret_mutations_vault ON secret_mutations(vault_id, occurred_at)"); } catch {}
+
 // ---------- Server Ed25519 signing key (derived from LVLS_DB_KEY) ─────────────
 // Used to sign offline tokens so clients can verify they came from this server.
 const _serverEd25519Seed = new Uint8Array(crypto.hkdfSync(
@@ -395,6 +437,12 @@ function auditLease(
       sourceIp, Date.now(),
       metadata ? JSON.stringify(metadata) : null
     );
+    // Fan-out access_denied events to 4Context security layer
+    if (event === "access_denied") {
+      const reason = metadata?.reason ?? "unknown";
+      emitToHub({ source: "lvls", type: "key.denied", agent_id: null, task_id: null,
+        session_id: leaseId, payload: { machine_id: machineId, vault_id: vaultId, reason, source_ip: sourceIp } });
+    }
   } catch (e) {
     console.error("[LEASE_AUDIT] Failed to write audit event:", e);
   }
@@ -513,6 +561,32 @@ function requireAuth(minLevel: number) {
       next();
     } catch {
       res.status(401).json({ error: "Invalid token" });
+    }
+  };
+}
+
+// ── Machine admin token middleware ────────────────────────────────────────────
+// Validates a machine-admin JWT and re-checks the DB grant on every request.
+// Token must have { type: "machine-admin", machine_id, vault_id, scope: "secrets-rw" }.
+// Scope is enforced here: only own vault, no grant management, no vault CRUD.
+function requireMachineAdmin(vaultIdParam = "vaultId") {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const token = req.headers.authorization?.replace("Bearer ", "");
+    if (!token) return res.status(401).json({ error: "No token" });
+    try {
+      const payload = jwt.verify(token, JWT_SECRET, { algorithms: ["HS256"] }) as any;
+      if (payload.type !== "machine-admin") return res.status(403).json({ error: "Not a machine-admin token" });
+      if (payload.scope !== "secrets-rw") return res.status(403).json({ error: "Insufficient scope" });
+      const vaultId = req.params[vaultIdParam];
+      if (!vaultId || payload.vault_id !== vaultId) return res.status(403).json({ error: "Token vault mismatch" });
+      // Live grant check — revocation takes effect immediately regardless of JWT exp
+      const grant = db.prepare("SELECT id FROM machine_admin_grants WHERE vault_id = ? AND machine_id = ? AND active = 1").get(vaultId, payload.machine_id) as any;
+      if (!grant) return res.status(403).json({ error: "Machine admin grant revoked or not found" });
+      (req as any).machineAdminId = payload.machine_id;
+      (req as any).machineAdminVaultId = vaultId;
+      next();
+    } catch {
+      res.status(401).json({ error: "Invalid or expired machine-admin token" });
     }
   };
 }
@@ -1036,6 +1110,26 @@ app.get("/api/machine/vaults/:id/secrets", requireAuth(3), (req, res) => {
   res.json(secrets);
 });
 
+// Update a secret in a vault (name always; value only for cached secrets)
+app.put("/api/machine/vaults/:id/secrets/:secretId", requireAuth(3), (req, res) => {
+  const { name, value } = req.body;
+  if (!name || typeof name !== "string" || name.length > 128) return res.status(400).json({ error: "Valid name required" });
+  const secret = db.prepare("SELECT id, classification, vault_id FROM machine_secrets WHERE id = ? AND vault_id = ?").get(req.params.secretId, req.params.id) as any;
+  if (!secret) return res.status(404).json({ error: "Secret not found" });
+  try {
+    if (value && secret.classification === "cached") {
+      const storedValue = encryptCachedSecret(value, req.params.id);
+      db.prepare("UPDATE machine_secrets SET name = ?, encrypted_value = ? WHERE id = ?").run(name, storedValue, req.params.secretId);
+    } else {
+      db.prepare("UPDATE machine_secrets SET name = ? WHERE id = ?").run(name, req.params.secretId);
+    }
+    res.json({ success: true });
+  } catch (err: any) {
+    if (err.message?.includes("UNIQUE")) return res.status(409).json({ error: `Secret '${name}' already exists in this vault` });
+    res.status(500).json({ error: "Failed to update secret" });
+  }
+});
+
 // Delete a secret from a vault
 app.delete("/api/machine/vaults/:id/secrets/:secretId", requireAuth(3), (req, res) => {
   const secret = db.prepare("SELECT id FROM machine_secrets WHERE id = ? AND vault_id = ?").get(req.params.secretId, req.params.id);
@@ -1084,7 +1178,10 @@ app.post("/api/machine/vaults/:id/request", authRateLimit, async (req, res) => {
   if (!vault) return res.status(404).json({ error: "Vault not found" });
   if (!vault.kem_public_key) return res.status(400).json({ error: "Vault has no KEM key — not ready for use" });
 
-  const { totp, machine_id: rawMachineId, signature, timestamp, ed25519_public_key } = req.body;
+  const { totp, machine_id: rawMachineId, signature, timestamp, ed25519_public_key, context } = req.body;
+  const callContext = (context && typeof context === "object") ? context : {};
+  const ctxTaskId  = callContext.task_id   ? Number(callContext.task_id)   : null;
+  const ctxAgentId = callContext.agent_id  ? String(callContext.agent_id)  : null;
   const sourceIp = (req as any).rateLimitIp || "unknown";
   const machineId = (typeof rawMachineId === "string" && rawMachineId.length > 0 && rawMachineId.length <= 128)
     ? rawMachineId : sourceIp;
@@ -1230,9 +1327,13 @@ app.post("/api/machine/vaults/:id/request", authRateLimit, async (req, res) => {
   const sigInput = new TextEncoder().encode(`${kemB64}.${aesPacked}`);
   const serverSig = ed25519.sign(sigInput, SERVER_ED25519_PRIV);
 
-  auditLease("issued", leaseId, machineId, vault.id, sourceIp, secrets.map((s: any) => s.name));
+  auditLease("issued", leaseId, machineId, vault.id, sourceIp, secrets.map((s: any) => s.name),
+    { ...(ctxTaskId  !== null && { task_id:  ctxTaskId }),
+      ...(ctxAgentId !== null && { agent_id: ctxAgentId }) });
   db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
     .run(sourceIp, -1, "machine_request", JSON.stringify({ vault: vault.name, secrets: secrets.length, lease_id: leaseId }));
+  emitToHub({ source: "lvls", type: "lease.issued", agent_id: ctxAgentId, task_id: ctxTaskId,
+    session_id: leaseId, payload: { vault: vault.name, machine_id: machineId, keys: secrets.map((s: any) => s.name) } });
 
   res.json({
     kem_ciphertext: kemB64,
@@ -1368,6 +1469,8 @@ app.delete("/api/machine/leases/:leaseId", authRateLimit, (req, res) => {
   const now = Date.now();
   db.prepare("UPDATE leases SET status = 'revoked', revoked_at = ?, revoke_reason = 'explicit' WHERE id = ?").run(now, lease.id);
   auditLease("revoked", lease.id, machine_id, lease.vault_id, (req as any).rateLimitIp || "unknown");
+  emitToHub({ source: "lvls", type: "lease.revoked", agent_id: null, task_id: null,
+    session_id: lease.id, payload: { machine_id, vault_id: lease.vault_id } });
   res.json({ revoked: true, lease_id: lease.id });
 });
 
@@ -1505,8 +1608,176 @@ app.delete("/api/admin/grants/:id", requireAuth(3), (req, res) => {
   res.json({ success: true, leases_revoked: leases.length });
 });
 
+// ══════════════════════════════════════════════════════════════════════════════
+// MACHINE ADMIN GRANTS — admin creates/revokes, machine uses to get admin tokens
+// ══════════════════════════════════════════════════════════════════════════════
+
+app.get("/api/admin/machine-admin-grants", requireAuth(3), (_req, res) => {
+  res.json(db.prepare(
+    `SELECT g.id, g.vault_id, v.name as vault_name, g.machine_id, g.scope,
+            g.active, g.granted_by, g.created_at, g.revoked_at
+     FROM machine_admin_grants g
+     LEFT JOIN machine_vaults v ON v.id = g.vault_id
+     ORDER BY g.created_at DESC`
+  ).all());
+});
+
+app.post("/api/admin/machine-admin-grants", requireAuth(3), (req, res) => {
+  const { vault_id, machine_id } = req.body;
+  if (!vault_id || !machine_id) return res.status(400).json({ error: "vault_id and machine_id required" });
+  if (typeof machine_id !== "string" || machine_id.length > 128) return res.status(400).json({ error: "Invalid machine_id" });
+  if (!db.prepare("SELECT id FROM machine_vaults WHERE id = ?").get(vault_id)) return res.status(404).json({ error: "Vault not found" });
+  // Machine identity must be pre-registered — no auto-registration for admin grants
+  if (!db.prepare("SELECT machine_id FROM machine_identities WHERE machine_id = ?").get(machine_id)) {
+    return res.status(404).json({ error: "Machine identity not registered — register via POST /api/machine/identities first" });
+  }
+  const id = crypto.randomUUID();
+  try {
+    db.prepare(
+      "INSERT INTO machine_admin_grants (id, vault_id, machine_id, granted_by, scope, active, created_at) VALUES (?, ?, ?, ?, 'secrets-rw', 1, ?)"
+    ).run(id, vault_id, machine_id, (req as any).sessionId || "admin", Date.now());
+    db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
+      .run((req as any).sessionId || "admin", 3, "machine_admin_grant_created",
+        JSON.stringify({ vault_id, machine_id, grant_id: id }));
+    res.json({ id, vault_id, machine_id, scope: "secrets-rw" });
+  } catch (err: any) {
+    if (err.message?.includes("UNIQUE")) return res.status(409).json({ error: "Active grant already exists for this machine+vault" });
+    res.status(500).json({ error: "Failed to create grant" });
+  }
+});
+
+app.delete("/api/admin/machine-admin-grants/:id", requireAuth(3), (req, res) => {
+  const grant = db.prepare("SELECT id, vault_id, machine_id FROM machine_admin_grants WHERE id = ?").get(req.params.id) as any;
+  if (!grant) return res.status(404).json({ error: "Grant not found" });
+  db.prepare("UPDATE machine_admin_grants SET active = 0, revoked_at = ? WHERE id = ?").run(Date.now(), grant.id);
+  db.prepare("INSERT INTO session_logs (session_id, user_level, action, details) VALUES (?, ?, ?, ?)")
+    .run((req as any).sessionId || "admin", 3, "machine_admin_grant_revoked",
+      JSON.stringify({ vault_id: grant.vault_id, machine_id: grant.machine_id, grant_id: grant.id }));
+  res.json({ success: true });
+});
+
+// ── Machine admin token — machine authenticates and gets a scoped 15-min JWT ──
+// Requires: registered Ed25519 identity + active machine_admin_grant for vault.
+// DS-fix: Ed25519 required (no TOTP fallback) — prevents TOTP-seed-only escalation.
+app.post("/api/machine/admin-token", authRateLimit, (req, res) => {
+  const { machine_id, vault_id, signature, timestamp } = req.body;
+  if (!machine_id || !vault_id) return res.status(400).json({ error: "machine_id and vault_id required" });
+  if (!signature || !timestamp) return res.status(400).json({ error: "Ed25519 signature required — TOTP-only auth not accepted for admin tokens" });
+
+  const identity = db.prepare("SELECT ed25519_public_key FROM machine_identities WHERE machine_id = ?").get(machine_id) as any;
+  if (!identity) {
+    auditLease("admin_token_denied", null, machine_id, vault_id, (req as any).rateLimitIp || "unknown", undefined, { reason: "identity_unknown" });
+    return res.status(401).json({ error: "Machine identity not registered" });
+  }
+
+  if (!verifyMachineSignature(vault_id, machine_id, Number(timestamp), signature, identity.ed25519_public_key)) {
+    rateLimitOnFailure((req as any).rateLimitIp);
+    auditLease("admin_token_denied", null, machine_id, vault_id, (req as any).rateLimitIp || "unknown", undefined, { reason: "sig_invalid" });
+    return res.status(401).json({ error: "Invalid Ed25519 signature or stale timestamp" });
+  }
+
+  // Replay prevention
+  const replayKey = `machine-admin:${machine_id}:${timestamp}`;
+  const used = db.prepare("SELECT 1 FROM used_totps WHERE code = ? AND level = ?").get(replayKey, -3);
+  if (used) return res.status(401).json({ error: "Timestamp already used — replay detected" });
+  db.prepare("INSERT INTO used_totps (code, level, expires_at) VALUES (?, ?, ?)").run(replayKey, -3, Date.now() + 120_000);
+
+  const grant = db.prepare("SELECT id FROM machine_admin_grants WHERE vault_id = ? AND machine_id = ? AND active = 1").get(vault_id, machine_id) as any;
+  if (!grant) {
+    auditLease("admin_token_denied", null, machine_id, vault_id, (req as any).rateLimitIp || "unknown", undefined, { reason: "no_admin_grant" });
+    return res.status(403).json({ error: "No machine admin grant for this vault" });
+  }
+
+  const vault = db.prepare("SELECT id, name FROM machine_vaults WHERE id = ?").get(vault_id) as any;
+  if (!vault) return res.status(404).json({ error: "Vault not found" });
+
+  const sessionId = crypto.randomUUID();
+  const token = jwt.sign(
+    { type: "machine-admin", machine_id, vault_id, scope: "secrets-rw", sessionId },
+    JWT_SECRET,
+    { expiresIn: "15m" }
+  );
+
+  auditLease("admin_token_issued", null, machine_id, vault_id, (req as any).rateLimitIp || "unknown", undefined,
+    { grant_id: grant.id, session_id: sessionId });
+  emitToHub({ source: "lvls", type: "machine.admin_token_issued", agent_id: null, task_id: null,
+    session_id: sessionId, payload: { machine_id, vault_id, vault_name: vault.name,
+      source_ip: (req as any).rateLimitIp } });
+
+  res.json({ token, expires_in: 900, vault_id, scope: "secrets-rw" });
+});
+
+// ── Machine admin secret endpoints — secrets-rw on own vault only ─────────────
+
+// List secret names (no values exposed)
+app.get("/api/machine/admin/:vaultId/secrets", requireMachineAdmin(), (req, res) => {
+  const secrets = db.prepare(
+    "SELECT id, name, classification, created_at FROM machine_secrets WHERE vault_id = ?"
+  ).all(req.params.vaultId);
+  res.json(secrets);
+});
+
+// Upsert secret by name — creates or updates, always cached classification
+app.put("/api/machine/admin/:vaultId/secrets/:name", requireMachineAdmin(), (req, res) => {
+  const { value } = req.body;
+  if (!value || typeof value !== "string") return res.status(400).json({ error: "value required" });
+  const { vaultId, name } = req.params;
+  const machineId = (req as any).machineAdminId;
+  const sourceIp = (req as any).rateLimitIp || "unknown";
+
+  const existing = db.prepare("SELECT id FROM machine_secrets WHERE vault_id = ? AND name = ?").get(vaultId, name) as any;
+  const encrypted = encryptCachedSecret(value, vaultId);
+  const now = Date.now();
+  const action = existing ? "updated" : "created";
+
+  if (existing) {
+    db.prepare("UPDATE machine_secrets SET encrypted_value = ? WHERE vault_id = ? AND name = ?").run(encrypted, vaultId, name);
+  } else {
+    db.prepare("INSERT INTO machine_secrets (id, vault_id, name, encrypted_value, classification) VALUES (?, ?, ?, ?, 'cached')")
+      .run(crypto.randomUUID(), vaultId, name, encrypted);
+  }
+
+  db.prepare("INSERT INTO secret_mutations (id, vault_id, secret_name, action, actor, actor_type, source_ip, occurred_at) VALUES (?, ?, ?, ?, ?, 'machine', ?, ?)")
+    .run(crypto.randomUUID(), vaultId, name, action, machineId, sourceIp, now);
+  emitToHub({ source: "lvls", type: "secret.mutated", agent_id: null, task_id: null,
+    session_id: null, payload: { vault_id: vaultId, name, action, actor: machineId, source_ip: sourceIp } });
+
+  res.json({ ok: true, name, action });
+});
+
+// Delete secret by name
+app.delete("/api/machine/admin/:vaultId/secrets/:name", requireMachineAdmin(), (req, res) => {
+  const { vaultId, name } = req.params;
+  const machineId = (req as any).machineAdminId;
+  const sourceIp = (req as any).rateLimitIp || "unknown";
+
+  const existing = db.prepare("SELECT id FROM machine_secrets WHERE vault_id = ? AND name = ?").get(vaultId, name) as any;
+  if (!existing) return res.status(404).json({ error: "Secret not found" });
+
+  db.prepare("DELETE FROM machine_secrets WHERE vault_id = ? AND name = ?").run(vaultId, name);
+  db.prepare("INSERT INTO secret_mutations (id, vault_id, secret_name, action, actor, actor_type, source_ip, occurred_at) VALUES (?, ?, ?, ?, ?, 'machine', ?, ?)")
+    .run(crypto.randomUUID(), vaultId, name, "deleted", machineId, sourceIp, Date.now());
+  emitToHub({ source: "lvls", type: "secret.mutated", agent_id: null, task_id: null,
+    session_id: null, payload: { vault_id: vaultId, name, action: "deleted", actor: machineId, source_ip: sourceIp } });
+
+  res.json({ ok: true });
+});
+
+// ── Admin: Secret mutations audit log ─────────────────────────────────────────
+app.get("/api/admin/secret-mutations", requireAuth(3), (req, res) => {
+  const { vault_id, actor, from, to } = req.query;
+  let query = "SELECT * FROM secret_mutations WHERE 1=1";
+  const params: any[] = [];
+  if (vault_id) { query += " AND vault_id = ?"; params.push(vault_id); }
+  if (actor) { query += " AND actor = ?"; params.push(actor); }
+  if (from) { query += " AND occurred_at >= ?"; params.push(Number(from)); }
+  if (to) { query += " AND occurred_at <= ?"; params.push(Number(to)); }
+  query += " ORDER BY occurred_at DESC LIMIT 500";
+  res.json(db.prepare(query).all(...params));
+});
+
 // ---------- Vault: Backup export ----------
-app.post("/api/vault/backup", requireAuth(0), express.json({ limit: "1mb" }), (req, res) => {
+app.post("/api/vault/backup", requireAuth(3), express.json({ limit: "1mb" }), (req, res) => {
   try {
     const { passphrase } = req.body;
     if (!passphrase || typeof passphrase !== "string" || passphrase.length < 12) {
@@ -1544,11 +1815,24 @@ app.post("/api/vault/backup", requireAuth(0), express.json({ limit: "1mb" }), (r
 });
 
 // ---------- Vault: Restore ----------
-app.post("/api/vault/restore", requireAuth(0), (req, res) => {
+// requireAuth(3) + fresh TOTP confirmation required — prevents E1/T1/R3 attack chain.
+app.post("/api/vault/restore", requireAuth(3), (req, res) => {
   try {
-    const { bundle, passphrase } = req.body;
+    const { bundle, passphrase, confirm_totp } = req.body;
     if (!bundle || !passphrase) {
       return res.status(400).json({ error: "bundle and passphrase are required" });
+    }
+    // Require a fresh TOTP code regardless of active session — protects against stolen JWT
+    const authRow = db.prepare("SELECT totp_secret, totp_enabled FROM auth_config WHERE level = 3").get() as any;
+    if (authRow?.totp_enabled && authRow?.totp_secret) {
+      if (!confirm_totp) return res.status(401).json({ error: "confirm_totp required for restore", totpRequired: true });
+      if (!verifyTotp(decryptTotp(authRow.totp_secret), confirm_totp)) {
+        return res.status(401).json({ error: "Invalid TOTP confirmation code" });
+      }
+      const replayKey = `restore-confirm:${confirm_totp}`;
+      const used = db.prepare("SELECT 1 FROM used_totps WHERE code = ? AND level = ?").get(replayKey, 99);
+      if (used) return res.status(401).json({ error: "TOTP code already used" });
+      db.prepare("INSERT INTO used_totps (code, level, expires_at) VALUES (?, ?, ?)").run(replayKey, 99, Date.now() + 90_000);
     }
 
     const packed = Buffer.from(bundle, "base64");
@@ -1587,6 +1871,8 @@ app.post("/api/vault/restore", requireAuth(0), (req, res) => {
       db.exec("DELETE FROM machine_vaults"); // CASCADE removes machine_secrets
       db.exec("DELETE FROM machine_identities");
       db.exec("DELETE FROM vault_grants");
+      db.exec("DELETE FROM machine_admin_grants");
+      // session_logs intentionally NOT deleted — preserve audit trail through restore
 
       const insertSecret = db.prepare(
         "INSERT OR REPLACE INTO secrets (id, name, level, secret_type, encrypted_value, tags, expiry, url, username, folder, created_at) VALUES (@id, @name, @level, @secret_type, @encrypted_value, @tags, @expiry, @url, @username, @folder, @created_at)"
@@ -1637,15 +1923,29 @@ app.post("/api/vault/restore", requireAuth(0), (req, res) => {
 });
 
 // ---------- Vault: Nuke (wipe everything) ----------
-app.delete("/api/vault/nuke", requireAuth(0), (req, res) => {
+// requireAuth(3) + TOTP confirmation — protects against E1 (level-0 → full wipe).
+app.delete("/api/vault/nuke", requireAuth(3), (req, res) => {
   try {
+    const { confirm_totp } = req.body || {};
+    const authRow = db.prepare("SELECT totp_secret, totp_enabled FROM auth_config WHERE level = 3").get() as any;
+    if (authRow?.totp_enabled && authRow?.totp_secret) {
+      if (!confirm_totp) return res.status(401).json({ error: "confirm_totp required for nuke", totpRequired: true });
+      if (!verifyTotp(decryptTotp(authRow.totp_secret), confirm_totp)) {
+        return res.status(401).json({ error: "Invalid TOTP confirmation code" });
+      }
+      const replayKey = `nuke-confirm:${confirm_totp}`;
+      const used = db.prepare("SELECT 1 FROM used_totps WHERE code = ? AND level = ?").get(replayKey, 98);
+      if (used) return res.status(401).json({ error: "TOTP code already used" });
+      db.prepare("INSERT INTO used_totps (code, level, expires_at) VALUES (?, ?, ?)").run(replayKey, 98, Date.now() + 90_000);
+    }
     db.transaction(() => {
       db.exec("DELETE FROM secrets");
-      db.exec("DELETE FROM session_logs");
       db.exec("DELETE FROM auth_config");
       db.exec("DELETE FROM vault_grants");
+      db.exec("DELETE FROM machine_admin_grants");
       db.exec("DELETE FROM machine_vaults"); // CASCADE removes machine_secrets
       db.exec("DELETE FROM machine_identities");
+      // session_logs preserved intentionally — nuke evidence must survive nuke
     })();
     console.warn("[NUKE] Vault wiped at", new Date().toISOString());
     res.json({ success: true });

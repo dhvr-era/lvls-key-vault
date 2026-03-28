@@ -1106,9 +1106,15 @@ export default function App() {
   const [cancelVaultConfirm, setCancelVaultConfirm] = useState(false);
   const [issuingOfflineToken, setIssuingOfflineToken] = useState(false);
   const [offlineTokenForm, setOfflineTokenForm] = useState({ machineId: "", ttlHours: "24" });
+  const [showAdminGrants, setShowAdminGrants] = useState(false);
+  interface MachineAdminGrant { id: string; vault_id: string; vault_name: string; machine_id: string; scope: string; active: number; granted_by: string; created_at: number; }
+  const [adminGrants, setAdminGrants] = useState<MachineAdminGrant[]>([]);
+  const [newAdminGrantMachineId, setNewAdminGrantMachineId] = useState("");
   const [pendingDelete, setPendingDelete] = useState<{ type: 'secret' | 'vault' | 'machineSecret'; id: string; name: string } | null>(null);
   const [pendingSaveToLvl2, setPendingSaveToLvl2] = useState(false);
   const [isAddingMachineSecret, setIsAddingMachineSecret] = useState(false);
+  const [editingMachineSecret, setEditingMachineSecret] = useState<string | null>(null);
+  const [editMachineSecretForm, setEditMachineSecretForm] = useState({ name: '', value: '' });
   const [newVault, setNewVault] = useState({ name: "", description: "", ttl: "14400" });
   const [pendingSecretLevel, setPendingSecretLevel] = useState<number | null>(null);
   const [newMachineSecret, setNewMachineSecret] = useState({ name: "", value: "", classification: "cached" });
@@ -1302,6 +1308,39 @@ export default function App() {
     }
   };
 
+  const fetchAdminGrants = async (vaultId: string) => {
+    try {
+      const res = await fetch(`/api/admin/machine-admin-grants`, {
+        headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
+      });
+      if (res.ok) {
+        const all: MachineAdminGrant[] = await res.json();
+        setAdminGrants(all.filter(g => g.vault_id === vaultId && g.active === 1));
+      }
+    } catch (error) {
+      console.error("Failed to fetch admin grants", error);
+    }
+  };
+
+  const createAdminGrant = async (vaultId: string, machineId: string) => {
+    if (!machineId.trim()) return;
+    const res = await fetch(`/api/admin/machine-admin-grants`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}) },
+      body: JSON.stringify({ vault_id: vaultId, machine_id: machineId.trim() }),
+    });
+    if (res.ok) { setNewAdminGrantMachineId(""); fetchAdminGrants(vaultId); }
+    else { const e = await res.json(); alert(e.error || "Failed to create grant"); }
+  };
+
+  const revokeAdminGrant = async (grantId: string, vaultId: string) => {
+    const res = await fetch(`/api/admin/machine-admin-grants/${grantId}`, {
+      method: "DELETE",
+      headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
+    });
+    if (res.ok) fetchAdminGrants(vaultId);
+  };
+
   const createMachineVault = async () => {
     if (!newVault.name) return;
     try {
@@ -1364,14 +1403,14 @@ export default function App() {
       let secretValue = newMachineSecret.value;
 
       if (newMachineSecret.classification === "blind") {
-        // Blind: encrypt with ML-KEM in browser — server never sees plaintext
-        const kemRes = await fetch(`/api/machine/vaults/${selectedVault.id}/kem-key`, {
+        // Blind: encrypt with server's ML-KEM1 public key — server decrypts on lease using SERVER_ML_KEM1_PRIV
+        const kemRes = await fetch(`/api/machine/ml-kem1-public-key`, {
           headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
         });
-        if (!kemRes.ok) { alert("This vault has no ML-KEM public key registered. Re-create the vault to generate one."); return; }
-        const { kem_public_key } = await kemRes.json();
-        if (!kem_public_key) { alert("This vault has no ML-KEM public key registered. Re-create the vault to generate one."); return; }
-        const encrypted = await hybridEncrypt(newMachineSecret.value, kem_public_key);
+        if (!kemRes.ok) { alert("Server ML-KEM1 key not available. Check lvls server logs."); return; }
+        const { ml_kem1_public_key } = await kemRes.json();
+        if (!ml_kem1_public_key) { alert("Server ML-KEM1 key missing."); return; }
+        const encrypted = await hybridEncrypt(newMachineSecret.value, ml_kem1_public_key);
         secretValue = JSON.stringify(encrypted);
       }
       // Cached: send plaintext over TLS — server encrypts with AES-256-GCM and serves plaintext on lease
@@ -1392,6 +1431,31 @@ export default function App() {
     } catch (error) {
       console.error("Failed to add secret", error);
       alert("Failed to add secret — check console for details");
+    }
+  };
+
+  const handleMachineSecretEditSave = async (secretId: string, classification: string) => {
+    if (!selectedVault || !editMachineSecretForm.name.trim()) return;
+    try {
+      const body: Record<string, string> = { name: editMachineSecretForm.name.trim() };
+      if (classification === "cached" && editMachineSecretForm.value.trim()) {
+        body.value = editMachineSecretForm.value.trim();
+      }
+      const res = await fetch(`/api/machine/vaults/${selectedVault.id}/secrets/${secretId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}) },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        setEditingMachineSecret(null);
+        setEditMachineSecretForm({ name: '', value: '' });
+        fetchVaultSecrets(selectedVault.id);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Failed to update secret");
+      }
+    } catch (error) {
+      console.error("Failed to update secret", error);
     }
   };
 
@@ -2411,14 +2475,14 @@ export default function App() {
                                     setEditingSecret(secret.id);
                                     setEditForm({ name: secret.name, type: secret.secret_type || 'custom', tags: secret.tags.join(', '), url: secret.url || '', username: secret.username || '', folder: secret.folder || '' });
                                   }}
-                                  className="text-zinc-500 hover:text-indigo-300 opacity-0 group-hover:opacity-100 transition-all p-1"
+                                  className="text-zinc-500 hover:text-indigo-300 transition-all p-1"
                                   title="Edit Secret"
                                 >
                                   <Pencil className="w-4 h-4" />
                                 </button>
                                 <button
                                   onClick={() => setPendingDelete({ type: 'secret', id: secret.id, name: secret.name })}
-                                  className="text-zinc-500 hover:text-rose-300 opacity-0 group-hover:opacity-100 transition-all p-1"
+                                  className="text-zinc-500 hover:text-rose-300 transition-all p-1"
                                   title="Delete Secret"
                                 >
                                   <Trash2 className="w-4 h-4" />
@@ -2662,6 +2726,7 @@ export default function App() {
                       <thead className="bg-black/60 text-zinc-400 text-xs uppercase tracking-widest border-b border-zinc-900">
                         <tr>
                           <th className="px-6 py-4 font-medium">Vault</th>
+                          <th className="px-6 py-4 font-medium text-right">ID</th>
                           <th className="px-6 py-4 font-medium">TTL</th>
                           <th className="px-6 py-4 font-medium">TOTP</th>
                           <th className="px-6 py-4 font-medium">KEM</th>
@@ -2673,12 +2738,18 @@ export default function App() {
                         {machineVaults.map(vault => (
                           <tr
                             key={vault.id}
-                            onClick={() => { setSelectedVault(vault); fetchVaultSecrets(vault.id); }}
+                            onClick={() => { setSelectedVault(vault); fetchVaultSecrets(vault.id); setAdminGrants([]); setShowAdminGrants(false); }}
                             className="hover:bg-zinc-900/40 transition-all duration-100 cursor-pointer border-b border-zinc-900/50"
                           >
                             <td className="px-6 py-4">
                               <div className="text-zinc-200 font-medium">{vault.name}</div>
                               {vault.description && <div className="text-xs text-zinc-600 mt-0.5">{vault.description}</div>}
+                            </td>
+                            <td className="px-6 py-4 text-right" onClick={e => e.stopPropagation()}>
+                              <div className="flex items-center justify-end gap-1">
+                                <span className="text-[10px] font-mono text-zinc-600 select-all">{vault.id.slice(0,8)}&hellip;</span>
+                                <button onClick={() => copyToClipboard(vault.id)} title={vault.id} className="p-0.5 text-zinc-700 hover:text-zinc-400 transition-colors"><Copy className="w-3 h-3" /></button>
+                              </div>
                             </td>
                             <td className="px-6 py-4 text-zinc-400 font-mono text-xs">{Math.floor(vault.ttl / 3600)}h {Math.floor((vault.ttl % 3600) / 60)}m</td>
                             <td className="px-6 py-4">
@@ -2705,7 +2776,7 @@ export default function App() {
                         ))}
                         {machineVaults.length === 0 && !isAddingVault && (
                           <tr>
-                            <td colSpan={6} className="px-6 py-16 text-center text-zinc-500">
+                            <td colSpan={7} className="px-6 py-16 text-center text-zinc-500">
                               <div className="flex flex-col items-center justify-center gap-3">
                                 <Hexagon className="w-8 h-8 text-zinc-700" />
                                 <p>No machine vaults. Create one to give a service programmatic secret access.</p>
@@ -2721,7 +2792,7 @@ export default function App() {
                 <>
                   <div className="flex items-center gap-3">
                     <button
-                      onClick={() => { setSelectedVault(null); setVaultSecrets([]); setIsAddingMachineSecret(false); }}
+                      onClick={() => { setSelectedVault(null); setVaultSecrets([]); setIsAddingMachineSecret(false); setAdminGrants([]); setShowAdminGrants(false); }}
                       className="p-2 text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900 rounded-lg transition-all"
                     >
                       <X className="w-4 h-4" />
@@ -2749,6 +2820,49 @@ export default function App() {
                         {selectedVault.has_kem_key ? "Registered" : "Not set"}
                       </p>
                     </div>
+                  </div>
+
+                  {/* Machine Admin Access */}
+                  <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4">
+                    <button
+                      onClick={() => { setShowAdminGrants(v => !v); if (!showAdminGrants) fetchAdminGrants(selectedVault.id); }}
+                      className="w-full flex items-center justify-between text-left"
+                    >
+                      <div>
+                        <p className="text-xs text-zinc-600 uppercase tracking-widest font-medium">Machine Admin Access</p>
+                        <p className="text-sm font-medium mt-1 text-zinc-400">{adminGrants.length} active grant{adminGrants.length !== 1 ? "s" : ""}</p>
+                      </div>
+                      <span className="text-zinc-600 text-xs">{showAdminGrants ? "▲" : "▼"}</span>
+                    </button>
+                    {showAdminGrants && (
+                      <div className="mt-4 space-y-2">
+                        <p className="text-xs text-zinc-600">Machines with secrets-rw grant can request a 15-min admin token without human PIN. Live-revocable.</p>
+                        {adminGrants.map(g => (
+                          <div key={g.id} className="flex items-center justify-between bg-zinc-900 rounded-lg px-3 py-2">
+                            <span className="font-mono text-xs text-zinc-300">{g.machine_id}</span>
+                            <button
+                              onClick={() => revokeAdminGrant(g.id, selectedVault.id)}
+                              className="text-rose-500 hover:text-rose-400 text-xs font-medium transition-all"
+                            >Revoke</button>
+                          </div>
+                        ))}
+                        {adminGrants.length === 0 && <p className="text-xs text-zinc-600 italic">No active grants</p>}
+                        <div className="flex gap-2 mt-3">
+                          <input
+                            type="text"
+                            value={newAdminGrantMachineId}
+                            onChange={e => setNewAdminGrantMachineId(e.target.value)}
+                            placeholder="machine_id"
+                            className="flex-1 bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-sm text-white placeholder-zinc-600 font-mono focus:outline-none focus:border-violet-500"
+                          />
+                          <button
+                            onClick={() => createAdminGrant(selectedVault.id, newAdminGrantMachineId)}
+                            disabled={!newAdminGrantMachineId.trim()}
+                            className="bg-violet-600 hover:bg-violet-500 disabled:opacity-40 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+                          >Grant</button>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex justify-between items-center">
@@ -2870,6 +2984,51 @@ export default function App() {
                       </thead>
                       <tbody>
                         {vaultSecrets.map(secret => (
+                          editingMachineSecret === secret.id ? (
+                            <tr key={secret.id} className="bg-zinc-900/60 border-b border-zinc-800">
+                              <td className="px-4 py-3" colSpan={3}>
+                                <div className="flex flex-col gap-2">
+                                  <input
+                                    autoFocus
+                                    value={editMachineSecretForm.name}
+                                    onChange={e => setEditMachineSecretForm(f => ({ ...f, name: e.target.value }))}
+                                    className="bg-zinc-950 border border-zinc-700 text-zinc-200 font-mono text-xs rounded-lg px-3 py-2 w-full focus:outline-none focus:border-violet-500"
+                                    placeholder="Key name"
+                                  />
+                                  {secret.classification === "cached" && (
+                                    <input
+                                      value={editMachineSecretForm.value}
+                                      onChange={e => setEditMachineSecretForm(f => ({ ...f, value: e.target.value }))}
+                                      className="bg-zinc-950 border border-zinc-700 text-zinc-200 font-mono text-xs rounded-lg px-3 py-2 w-full focus:outline-none focus:border-violet-500"
+                                      placeholder="New value (leave blank to keep existing)"
+                                      type="password"
+                                    />
+                                  )}
+                                  {secret.classification === "blind" && (
+                                    <p className="text-zinc-600 text-xs px-1">Blind secret — value cannot be updated via UI. Name only.</p>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="flex gap-1 justify-end">
+                                  <button
+                                    onClick={() => handleMachineSecretEditSave(secret.id, secret.classification)}
+                                    className="p-1.5 text-emerald-400 hover:bg-emerald-500/10 rounded-lg transition-all"
+                                    title="Save"
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    onClick={() => { setEditingMachineSecret(null); setEditMachineSecretForm({ name: '', value: '' }); }}
+                                    className="p-1.5 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-700/40 rounded-lg transition-all"
+                                    title="Cancel"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          ) : (
                           <tr key={secret.id} className="hover:bg-zinc-900/40 transition-all duration-100 border-b border-zinc-900/50">
                             <td className="px-6 py-4 text-zinc-200 font-mono text-xs">{secret.name}</td>
                             <td className="px-6 py-4">
@@ -2879,15 +3038,25 @@ export default function App() {
                             </td>
                             <td className="px-6 py-4 text-zinc-500 text-xs">{new Date(secret.created_at).toLocaleDateString()}</td>
                             <td className="px-6 py-4">
-                              <button
-                                onClick={() => setPendingDelete({ type: 'machineSecret', id: secret.id, name: secret.name })}
-                                className="p-1.5 text-zinc-600 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-all"
-                                title="Delete secret"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              <div className="flex gap-1 justify-end">
+                                <button
+                                  onClick={() => { setEditingMachineSecret(secret.id); setEditMachineSecretForm({ name: secret.name, value: '' }); }}
+                                  className="p-1.5 text-zinc-600 hover:text-violet-400 hover:bg-violet-500/10 rounded-lg transition-all"
+                                  title="Edit secret"
+                                >
+                                  <Pencil className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => setPendingDelete({ type: 'machineSecret', id: secret.id, name: secret.name })}
+                                  className="p-1.5 text-zinc-600 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-all"
+                                  title="Delete secret"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
                             </td>
                           </tr>
+                          )
                         ))}
                         {vaultSecrets.length === 0 && !isAddingMachineSecret && (
                           <tr>
