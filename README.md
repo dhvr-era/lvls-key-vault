@@ -173,6 +173,8 @@ See [SECURITY.md](SECURITY.md) for the full threat model and vulnerability discl
 - **Vault grants** — role-based access control with max TTL and optional secret key scoping
 - **Lease-based access** — time-limited credentials with grace period, refresh, and revocation
 - **Lease audit log** — full event trail (issued, refreshed, revoked, expired, accessed) with source IP
+- **Machine admin grants** — grant a machine service-account write access to a specific vault without human credentials
+- **Secret mutation audit** — every secret create/update/delete logged with level, session ID, and timestamp
 - **Blind classification** — ML-KEM encrypted secrets the server can never decrypt
 - **Cached classification** — AES-256-GCM server-encrypted secrets for high-throughput access
 
@@ -186,7 +188,7 @@ See [SECURITY.md](SECURITY.md) for the full threat model and vulnerability discl
 - **Encrypted export** — full vault dump (secrets, auth config, machine vaults) as a `.lvls` file
 - **AES-256-GCM with PBKDF2** — backup passphrase is independent of vault credentials
 - **Transactional restore** — atomic restore with two-phase confirmation; stats returned on success
-- **lvl0-gated** — backup and restore require the highest clearance level
+- **TOTP-confirmed** — backup and restore require an authenticated session plus fresh TOTP confirmation to prevent session-hijack attacks
 
 ### Browser extension (Chrome / Edge MV3)
 - **Form detection** — automatically finds login forms on any site
@@ -581,6 +583,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 | `HOST` | No | `127.0.0.1` | Bind address. Set to a Tailscale IP for remote access over your mesh. |
 | `EXTENSION_ID` | Recommended | — | Chrome extension ID. Restricts CORS to your extension only. |
 | `NODE_ENV` | No | `development` | Set to `production` to serve the built `dist/` instead of Vite dev server. |
+| `CONTEXT4_HUB_URL` | No | `http://100.64.0.3:4000` | 4Context event hub URL. Audit events (auth, lease, secret mutations) are fan-out posted here. No-op if unreachable. |
 
 ---
 
@@ -666,14 +669,18 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 | POST | `/api/admin/machine/vaults/:id/offline-token` | lvl3+ | Admin-issued offline token |
 | GET | `/api/admin/machine-identities` | lvl3+ | List machine identities |
 | DELETE | `/api/admin/machine-identities/:machineId` | lvl3+ | Delete machine identity |
+| GET | `/api/admin/machine-admin-grants` | lvl3+ | List machine admin grants |
+| POST | `/api/admin/machine-admin-grants` | lvl3+ | Create machine admin grant (secrets-rw on a vault) |
+| DELETE | `/api/admin/machine-admin-grants/:id` | lvl3+ | Delete machine admin grant |
+| GET | `/api/admin/secret-mutations` | lvl3+ | Secret mutation audit log |
 
 ### Vault
 
 | Method | Route | Auth | Description |
 |--------|-------|------|-------------|
-| POST | `/api/vault/backup` | **lvl0** | Export AES-256-GCM encrypted `.lvls` bundle |
-| POST | `/api/vault/restore` | **lvl0** | Restore from `.lvls` bundle (transactional) |
-| DELETE | `/api/vault/nuke` | **lvl0** | Irreversibly wipe all vault data |
+| POST | `/api/vault/backup` | lvl3+ + TOTP | Export AES-256-GCM encrypted `.lvls` bundle |
+| POST | `/api/vault/restore` | lvl3+ + TOTP | Restore from `.lvls` bundle (transactional) |
+| DELETE | `/api/vault/nuke` | lvl3+ + TOTP | Irreversibly wipe all vault data |
 | GET | `/api/logs` | lvl3+ | Session audit log |
 
 ¹ Bootstrap is only callable when zero levels are configured.
@@ -750,6 +757,7 @@ All findings were remediated prior to publication.
 - [x] OWASP ASVS Level 3 audit
 - [ ] Firefox and Safari extension ports
 - [ ] FIDO2 / WebAuthn hardware key support
+- [ ] TPM2 / YubiKey hardware signer for bootstrap credentials (see LVLS-DEV-003)
 - [ ] Multi-user / team vaults with per-member ML-KEM encryption
 - [ ] Mobile companion app (React Native)
 - [ ] Encrypted vault sync between instances

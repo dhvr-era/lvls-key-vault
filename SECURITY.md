@@ -75,18 +75,20 @@ AES-256-GCM.encrypt(totp_base32_secret) → stored in auth_config
 
 | Control | Implementation |
 |---------|---------------|
-| Rate limiting | DB-persisted (survives restarts), 10 failures / 15 min per IP |
+| Rate limiting | DB-persisted (survives restarts), 5 failures / 15 min per IP |
 | Per-level lockout | 5 wrong credentials locks a level for 15 min |
 | TOTP 2FA | RFC 6238, constant-time comparison (`crypto.timingSafeEqual`) |
 | Auto-lock | Client-side: wipes session + KEM keys from memory after 5 min inactivity |
 | Token revocation | Server-side JWT invalidation on logout |
-| Server binding | `127.0.0.1` only — not reachable from LAN |
+| Server binding | `127.0.0.1` by default. Can be set to a Tailscale IP for mesh-only remote access (`HOST=100.x.x.x`) |
 | TLS | HTTPS with HSTS (`max-age=31536000`) when certs present; refuses to start without certs unless `LVLS_ALLOW_HTTP=true` is explicitly set |
 | Security headers | `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer` |
 | CORS | Restricted to localhost + optionally one specific extension ID |
 | Input validation | Level params validated with `/^[0-3]$/` regex; UUIDs server-generated |
 | Body limit | 50KB max request body |
 | Privilege check | Cannot create secrets above your authenticated clearance level |
+| Machine admin grants | Service accounts granted write-access to a specific vault only; scope enforced on every request |
+| Secret mutation audit | Every secret create/update/delete logged with level, session ID, vault ID, and timestamp; fan-out to 4Context |
 
 ---
 
@@ -109,7 +111,7 @@ AES-256-GCM.encrypt(totp_base32_secret) → stored in auth_config
 |------|--------|
 | HTTPS cert | Self-signed by default. Use [mkcert](https://github.com/FiloSottile/mkcert) for trusted local cert |
 | localStorage | ML-KEM private keys stored encrypted in browser localStorage. XSS on localhost could access this |
-| No FIDO2 | Hardware security key UI exists but is not yet implemented |
+| No FIDO2/HSM | Hardware security key and TPM/YubiKey bootstrap not yet implemented. See LVLS-DEV-003 for design. |
 | Backup passphrase | Encrypted backup/restore implemented. Backup bundle is passphrase-protected (AES-256-GCM). Loss of passphrase = unrecoverable backup |
 | TOTP window | ±1 30-second window allowed to tolerate clock drift |
 | SQLite | Single-file DB, no replication. Suitable for personal use |
